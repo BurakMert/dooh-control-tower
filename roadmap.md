@@ -16,7 +16,7 @@ A summer-long, two-phase build. Optimized for **30-min daily pomodoro chunks**. 
 Goal: shippable demo of all three hero journeys (planning, diagnosis, reporting) running inside Claude Desktop as an MCP server.
 
 ### M0 — Setup & first MCP tool (Week 1 — 6 chunks)
-- [ ] **M0.1** — Init repo, push public to GitHub (no announcement), README skeleton with thesis statement.
+- [x] **M0.1** — Init repo, push public to GitHub (no announcement), README skeleton with thesis statement. *Shipped 2026-05-29.*
 - [ ] **M0.2** — Python project setup (pyproject.toml + uv + ruff), FastAPI hello-world on `/health`.
 - [ ] **M0.3** — MCP server hello-world (Python `mcp` lib), one tool returning a static string.
 - [ ] **M0.4** — Register MCP server in Claude Desktop config; verify the tool appears and calls.
@@ -93,4 +93,4 @@ Milestone shape (to be detailed once Phase 1 M7.2 lessons-learned is written —
 ---
 
 ## Today's start
-**Next chunk: M0.1** — Init repo, push public to GitHub, README skeleton with thesis statement.
+**Next chunk: M0.2** — Python project setup (pyproject.toml + uv + ruff), FastAPI hello-world on `/health`.
