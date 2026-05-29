@@ -17,7 +17,7 @@ Goal: shippable demo of all three hero journeys (planning, diagnosis, reporting)
 
 ### M0 — Setup & first MCP tool (Week 1 — 6 chunks)
 - [x] **M0.1** — Init repo, push public to GitHub (no announcement), README skeleton with thesis statement. *Shipped 2026-05-29.*
-- [ ] **M0.2** — Python project setup (pyproject.toml + uv + ruff), FastAPI hello-world on `/health`.
+- [x] **M0.2** — Python project setup (pyproject.toml + uv + ruff), FastAPI hello-world on `/health`. *Shipped 2026-05-29.*
 - [ ] **M0.3** — MCP server hello-world (Python `mcp` lib), one tool returning a static string.
 - [ ] **M0.4** — Register MCP server in Claude Desktop config; verify the tool appears and calls.
 - [ ] **M0.5** — First domain-shaped tool: `health_check` returning a structured response.
@@ -93,4 +93,4 @@ Milestone shape (to be detailed once Phase 1 M7.2 lessons-learned is written —
 ---
 
 ## Today's start
-**Next chunk: M0.2** — Python project setup (pyproject.toml + uv + ruff), FastAPI hello-world on `/health`.
+**Next chunk: M0.3** — MCP server hello-world (Python `mcp` lib), one tool returning a static string. *First concept-introducing chunk — gets a visual reflection page at `docs/reflections/m0-3-mcp-hello-world.html`.*

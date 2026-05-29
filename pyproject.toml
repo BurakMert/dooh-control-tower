@@ -1,0 +1,27 @@
+[project]
+name = "dooh-control-tower"
+version = "0.1.0"
+description = "Chat-driven operational tool for Digital Out-of-Home advertising."
+authors = [
+    { name = "BurakMert", email = "bmert88@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi[standard]>=0.136.3",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.17,<0.9.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.15",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
