@@ -9,6 +9,9 @@ A summer-long, two-phase build. Optimized for **30-min daily pomodoro chunks**. 
 - **Public quiet.** Repo public from day one. No announcement (LinkedIn / Twitter / blog) until at least Phase 1 milestone M4 ships.
 - **No premature polish.** README + screenshots happen at milestone boundaries, not after every chunk.
 - **Visual reflections on key parts.** Concept-introducing chunks ship with a layered HTML reflection page in `docs/reflections/` (Tailwind CDN + Mermaid, single-file, no build step). Pure plumbing chunks skip it. Structure: Big Picture → What we did → How it works → Why this way (collapsed) → Go deeper (collapsed). User pulls deeper via follow-up questions; HTML expandables mirror that.
+- **AI workflow skills, used habitually.** Slot skills at high-leverage moments — not every chunk. `grill-me-with-docs` before track design notes and library-binding chunks. `grill-me` before lessons-learned and Phase 2 design. `hand-over` at session end (replaces ad-hoc "tomorrow we start here"). `/ultrareview` at milestone boundaries (end of M0/M4/M5/M6/M7). Skip a skill on any chunk where it wouldn't add value — discipline is *using them where they help*, not performing them.
+- **Commit message footer when skills fire.** When one or more skills were used during a chunk, the commit message ends with `Skills: <name>, <name>` (e.g., `Skills: grill-me-with-docs, hand-over`). Git log becomes evidence of the workflow muscle, not just code muscle.
+- **Biweekly workflow refresh.** Recurring `WRn` chunks between milestones (~end of M2 / M4 / M6). One pomodoro each. Strict checklist: Anthropic news + Claude Code changelog; context7 check on MCP/Pydantic AI/A2UI/CopilotKit; skim 1 community workflow source; update `CLAUDE.md` / memory **only if it changes how we work**.
 
 ---
 
@@ -37,6 +40,9 @@ Goal: shippable demo of all three hero journeys (planning, diagnosis, reporting)
 - [ ] M2.4 — First mcp-ui surface: `CampaignCard`.
 - [ ] M2.5 — First mcp-ui surface: `ScreenList`.
 
+### WR1 — Workflow refresh #1 (~Day 14)
+- [ ] **WR1** — Workflow refresh: Anthropic news + Claude Code changelog, context7 version check (MCP / Pydantic AI / A2UI / CopilotKit), skim 1 community workflow source. Update `CLAUDE.md` / memory **only if** it changes how we work.
+
 ### M3 — Lite adserver + PoP capture (~5 chunks)
 - [ ] M3.1 — `/ad` endpoint, deterministic round-robin, no targeting yet.
 - [ ] M3.2 — Eligibility filter: active campaigns + daypart.
@@ -51,6 +57,9 @@ Goal: shippable demo of all three hero journeys (planning, diagnosis, reporting)
 - [ ] M4.4 — Time slider on heatmap.
 - [ ] M4.5 — Drill-down on hex click → screen list.
 - [ ] M4.6 — Milestone polish: README screenshot + demo gif.
+
+### WR2 — Workflow refresh #2 (~Day 28)
+- [ ] **WR2** — Workflow refresh: same checklist as WR1.
 
 ### M5 — Campaign creation hero journey (~6 chunks)
 - [ ] M5.1 — `create_campaign` tool (basics only).
@@ -68,13 +77,16 @@ Goal: shippable demo of all three hero journeys (planning, diagnosis, reporting)
 - [ ] M6.5 — Micro-form for one suggestion (e.g., expand polygon).
 - [ ] M6.6 — Milestone polish: README update + demo gif.
 
+### WR3 — Workflow refresh #3 (~Day 42)
+- [ ] **WR3** — Workflow refresh: same checklist as WR1.
+
 ### M7 — Phase 1 closeout (~4 chunks)
 - [ ] M7.1 — README v1: thesis, architecture diagram, three demo gifs.
 - [ ] M7.2 — Lessons-learned doc — raw material for Phase 2 motivation (what was constrained by MCP host, what would be better owning the canvas).
 - [ ] M7.3 — Tag `v0.1.0-mcp`.
 - [ ] M7.4 — Optional: short blog post draft, kept private.
 
-**Phase 1 total:** ~43 chunks. At 30 min/day = ~6 weeks of consistent showing-up (with ~1.5 weeks of life-slack).
+**Phase 1 total:** ~46 chunks (43 milestone + 3 workflow refreshes). At 30 min/day = ~6 weeks of consistent showing-up (with ~1.5 weeks of life-slack).
 
 ---
 
