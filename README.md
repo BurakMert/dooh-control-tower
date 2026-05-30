@@ -20,4 +20,8 @@ See [`roadmap.md`](./roadmap.md) for the milestone + chunk plan.
 - [`architecture-assessment.md`](./architecture-assessment.md) — Phase 2 target architecture
 - [`roadmap.md`](./roadmap.md) — milestone + chunk plan (source of truth)
 
-Visual learning reflections will accumulate at `docs/reflections/` as concept-introducing chunks ship.
+## Reflections
+
+Layered HTML reflection pages — what we built, how it works, decisions, prompts to go deeper.
+
+- [`m0-3-mcp-hello-world.html`](./docs/reflections/m0-3-mcp-hello-world.html) — FastMCP hello-world over stdio (M0.3)

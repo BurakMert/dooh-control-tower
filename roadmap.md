@@ -9,7 +9,7 @@ A summer-long, two-phase build. Optimized for **30-min daily pomodoro chunks**. 
 - **Public quiet.** Repo public from day one. No announcement (LinkedIn / Twitter / blog) until at least Phase 1 milestone M4 ships.
 - **No premature polish.** README + screenshots happen at milestone boundaries, not after every chunk.
 - **Visual reflections on key parts.** Concept-introducing chunks ship with a layered HTML reflection page in `docs/reflections/` (Tailwind CDN + Mermaid, single-file, no build step). Pure plumbing chunks skip it. Structure: Big Picture → What we did → How it works → Why this way (collapsed) → Go deeper (collapsed). User pulls deeper via follow-up questions; HTML expandables mirror that.
-- **AI workflow skills, used habitually.** Slot skills at high-leverage moments — not every chunk. `grill-me-with-docs` before track design notes and library-binding chunks. `grill-me` before lessons-learned and Phase 2 design. `hand-over` at session end (replaces ad-hoc "tomorrow we start here"). `/ultrareview` at milestone boundaries (end of M0/M4/M5/M6/M7). Skip a skill on any chunk where it wouldn't add value — discipline is *using them where they help*, not performing them.
+- **AI workflow skills, used habitually.** Slot skills at high-leverage moments — not every chunk. `grill-with-docs` before track design notes and library-binding chunks. `grill-me` before lessons-learned and Phase 2 design. `handoff` at session end (replaces ad-hoc "tomorrow we start here"). `/ultrareview` at milestone boundaries (end of M0/M4/M5/M6/M7). Skip a skill on any chunk where it wouldn't add value — discipline is *using them where they help*, not performing them.
 - **Commit message footer when skills fire.** When one or more skills were used during a chunk, the commit message ends with `Skills: <name>, <name>` (e.g., `Skills: grill-me-with-docs, hand-over`). Git log becomes evidence of the workflow muscle, not just code muscle.
 - **Biweekly workflow refresh.** Recurring `WRn` chunks between milestones (~end of M2 / M4 / M6). One pomodoro each. Strict checklist: Anthropic news + Claude Code changelog; context7 check on MCP/Pydantic AI/A2UI/CopilotKit; skim 1 community workflow source; update `CLAUDE.md` / memory **only if it changes how we work**.
 
@@ -18,11 +18,12 @@ A summer-long, two-phase build. Optimized for **30-min daily pomodoro chunks**. 
 ## Phase 1 — MCP + Claude Desktop + mcp-ui  (~6 weeks)
 Goal: shippable demo of all three hero journeys (planning, diagnosis, reporting) running inside Claude Desktop as an MCP server.
 
-### M0 — Setup & first MCP tool (Week 1 — 6 chunks)
+### M0 — Setup & first MCP tool (Week 1 — 7 chunks)
 - [x] **M0.1** — Init repo, push public to GitHub (no announcement), README skeleton with thesis statement. *Shipped 2026-05-29.*
 - [x] **M0.2** — Python project setup (pyproject.toml + uv + ruff), FastAPI hello-world on `/health`. *Shipped 2026-05-29.*
-- [ ] **M0.3** — MCP server hello-world (Python `mcp` lib), one tool returning a static string.
+- [x] **M0.3** — MCP server hello-world (Python `mcp` lib), one tool returning a static string. *Shipped 2026-05-30. Reflection: [`docs/reflections/m0-3-mcp-hello-world.html`](docs/reflections/m0-3-mcp-hello-world.html).*
 - [ ] **M0.4** — Register MCP server in Claude Desktop config; verify the tool appears and calls.
+- [ ] **M0.4b** — Also expose the MCP server over `streamable-http`; observe SSE on the wire; reflection comparing stdio vs streamable-http side-by-side.
 - [ ] **M0.5** — First domain-shaped tool: `health_check` returning a structured response.
 - [ ] **M0.6** — Docker compose with Postgres + PostGIS; verify connection from FastAPI.
 
@@ -86,7 +87,7 @@ Goal: shippable demo of all three hero journeys (planning, diagnosis, reporting)
 - [ ] M7.3 — Tag `v0.1.0-mcp`.
 - [ ] M7.4 — Optional: short blog post draft, kept private.
 
-**Phase 1 total:** ~46 chunks (43 milestone + 3 workflow refreshes). At 30 min/day = ~6 weeks of consistent showing-up (with ~1.5 weeks of life-slack).
+**Phase 1 total:** ~47 chunks (44 milestone + 3 workflow refreshes). At 30 min/day = ~6 weeks of consistent showing-up (with ~1.5 weeks of life-slack).
 
 ---
 
@@ -105,4 +106,4 @@ Milestone shape (to be detailed once Phase 1 M7.2 lessons-learned is written —
 ---
 
 ## Today's start
-**Next chunk: M0.3** — MCP server hello-world (Python `mcp` lib), one tool returning a static string. *First concept-introducing chunk — gets a visual reflection page at `docs/reflections/m0-3-mcp-hello-world.html`.*
+**Next chunk: M0.4** — Register the `dooh-mcp` server in Claude Desktop's `claude_desktop_config.json`; verify the `about` tool appears in the MCP picker and can be called from a chat. Plumbing chunk — no reflection expected.

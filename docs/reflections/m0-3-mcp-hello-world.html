@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>M0.3 — FastMCP hello-world over stdio · DOOH Control Tower</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "neutral", securityLevel: "loose" });
+</script>
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.92em; }
+  details[open] > summary .chev { transform: rotate(90deg); }
+  details > summary { list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  .chev { transition: transform 0.15s ease; display: inline-block; }
+  .mermaid { background: white; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-800 antialiased">
+
+<div class="max-w-4xl mx-auto px-6 py-10">
+
+  <!-- Header -->
+  <header class="mb-10 border-b border-slate-200 pb-6">
+    <div class="flex items-center gap-3 text-xs uppercase tracking-wider text-slate-500 mb-3">
+      <span class="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700">shipped</span>
+      <span>chunk M0.3</span>
+      <span>·</span>
+      <span>2026-05-30</span>
+      <span>·</span>
+      <span>concept-introducing</span>
+    </div>
+    <h1 class="text-3xl font-semibold text-slate-900 leading-tight">
+      FastMCP hello-world over stdio
+    </h1>
+    <p class="mt-3 text-slate-600 text-lg">
+      The first MCP server in the project: one tool, one transport, one protocol handshake.
+    </p>
+  </header>
+
+  <!-- The Big Picture -->
+  <section class="mb-12">
+    <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-500 mb-3">The Big Picture</h2>
+    <div class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+      <div class="mermaid mb-4">
+flowchart LR
+  classDef host fill:#dbeafe,stroke:#1e40af,color:#1e40af;
+  classDef server fill:#fef3c7,stroke:#a16207,color:#854d0e;
+  classDef wire fill:#f3f4f6,stroke:#475569,color:#334155;
+
+  CD["Claude Desktop<br/>(MCP host)"]:::host
+  WIRE["stdio<br/>(JSON-RPC frames)"]:::wire
+  SRV["dooh-mcp<br/>(FastMCP server)"]:::server
+  TOOL["about()"]:::server
+
+  CD <--> WIRE
+  WIRE <--> SRV
+  SRV --> TOOL
+      </div>
+      <p class="text-slate-700 leading-relaxed">
+        <strong>MCP</strong> (Model Context Protocol) is a JSON-RPC protocol that lets an LLM host
+        — like Claude Desktop — <em>discover</em> and <em>call</em> tools that you expose from your own process.
+        <strong>FastMCP</strong> is the Python SDK's high-level primitive: you decorate a typed function with
+        <code class="bg-slate-100 px-1 rounded">@mcp.tool()</code> and it becomes a callable tool with an
+        auto-generated JSON schema. <strong>stdio</strong> is the simplest transport: the host launches your
+        server as a child process and they exchange JSON-RPC frames over stdin/stdout.
+      </p>
+    </div>
+  </section>
+
+  <!-- What we did -->
+  <section class="mb-12">
+    <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-500 mb-3">What we did</h2>
+    <ul class="space-y-3">
+      <li class="bg-white rounded-lg border border-slate-200 p-4 flex gap-4">
+        <span class="text-emerald-600 font-mono text-sm pt-0.5">①</span>
+        <div>
+          <div class="font-medium text-slate-900">Added the <code>mcp[cli]</code> dep</div>
+          <div class="text-sm text-slate-600">Official Python SDK; the <code>[cli]</code> extra ships the <code>mcp</code> CLI including <code>mcp dev</code> (Inspector).</div>
+        </div>
+      </li>
+      <li class="bg-white rounded-lg border border-slate-200 p-4 flex gap-4">
+        <span class="text-emerald-600 font-mono text-sm pt-0.5">②</span>
+        <div>
+          <div class="font-medium text-slate-900">Created <code>src/dooh_control_tower/mcp/</code> subpackage</div>
+          <div class="text-sm text-slate-600">Room for future tool modules (<code>tools/campaigns.py</code>, <code>tools/screens.py</code>) without restructuring later.</div>
+        </div>
+      </li>
+      <li class="bg-white rounded-lg border border-slate-200 p-4 flex gap-4">
+        <span class="text-emerald-600 font-mono text-sm pt-0.5">③</span>
+        <div>
+          <div class="font-medium text-slate-900">Defined one tool: <code>about()</code></div>
+          <div class="text-sm text-slate-600">Returns a static description of the project — purpose, thesis, current phase.</div>
+        </div>
+      </li>
+      <li class="bg-white rounded-lg border border-slate-200 p-4 flex gap-4">
+        <span class="text-emerald-600 font-mono text-sm pt-0.5">④</span>
+        <div>
+          <div class="font-medium text-slate-900">Wired <code>dooh-mcp</code> script entry</div>
+          <div class="text-sm text-slate-600"><code>[project.scripts]</code> in <code>pyproject.toml</code>. Anyone reading the project sees the canonical launch command.</div>
+        </div>
+      </li>
+      <li class="bg-white rounded-lg border border-slate-200 p-4 flex gap-4">
+        <span class="text-emerald-600 font-mono text-sm pt-0.5">⑤</span>
+        <div>
+          <div class="font-medium text-slate-900">Verified end-to-end with the official MCP client</div>
+          <div class="text-sm text-slate-600"><code>initialize</code> handshake → <code>tools/list</code> returns <code>['about']</code> → <code>tools/call('about')</code> returns the right payload.</div>
+        </div>
+      </li>
+    </ul>
+  </section>
+
+  <!-- How it works -->
+  <section class="mb-12">
+    <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-500 mb-3">How it works</h2>
+
+    <div class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm mb-6">
+      <h3 class="text-base font-medium text-slate-900 mb-2">The 24-line server</h3>
+      <pre class="bg-slate-900 text-slate-100 rounded-md p-4 overflow-x-auto text-sm leading-relaxed"><code><span class="text-slate-400"># stdio MCP wire uses stdout for JSON-RPC frames — never print() in this module.</span>
+<span class="text-pink-300">from</span> mcp.server.fastmcp <span class="text-pink-300">import</span> FastMCP
+
+mcp = <span class="text-sky-300">FastMCP</span>(name=<span class="text-emerald-300">"DOOH Control Tower"</span>)
+
+
+<span class="text-yellow-300">@mcp.tool()</span>
+<span class="text-pink-300">def</span> <span class="text-sky-300">about</span>() -&gt; <span class="text-yellow-300">str</span>:
+    <span class="text-emerald-300">"""Describe the DOOH Control Tower MCP server: purpose, thesis, and current build phase."""</span>
+    <span class="text-pink-300">return</span> (
+        <span class="text-emerald-300">"DOOH Control Tower — a chat-driven operational tool for Digital Out-of-Home "</span>
+        <span class="text-emerald-300">"advertising. Thesis: the agent decides WHAT to show, the app decides HOW to "</span>
+        <span class="text-emerald-300">"render. Phase 1 build: MCP + Claude Desktop + mcp-ui. The DOOH adtech "</span>
+        <span class="text-emerald-300">"(adserver, campaign manager, reporting) is the canvas; the chat-driven "</span>
+        <span class="text-emerald-300">"operational tool is the product."</span>
+    )
+
+
+<span class="text-pink-300">def</span> <span class="text-sky-300">main</span>() -&gt; <span class="text-yellow-300">None</span>:
+    mcp.run()
+
+
+<span class="text-pink-300">if</span> __name__ == <span class="text-emerald-300">"__main__"</span>:
+    main()
+</code></pre>
+      <p class="mt-3 text-sm text-slate-600 leading-relaxed">
+        Every visible piece pulls weight: the comment defuses a future footgun, the decorator
+        registers the tool <em>and</em> generates its JSON schema from the type hints, the docstring becomes
+        the tool's description in that schema, and <code>mcp.run()</code> defaults to stdio when called
+        without arguments.
+      </p>
+    </div>
+
+    <div class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+      <h3 class="text-base font-medium text-slate-900 mb-3">The protocol handshake</h3>
+      <div class="mermaid mb-4">
+sequenceDiagram
+  participant H as MCP host<br/>(Claude Desktop, Inspector, client SDK)
+  participant S as dooh-mcp<br/>(FastMCP)
+
+  Note over H,S: 1. Host spawns server as a child process<br/>and connects its stdin/stdout
+  H->>S: initialize { protocolVersion, capabilities, clientInfo }
+  S-->>H: result { protocolVersion, capabilities, serverInfo }
+  H->>S: notifications/initialized
+
+  Note over H,S: 2. Host asks what tools exist
+  H->>S: tools/list
+  S-->>H: result { tools: [{ name: "about", description, inputSchema }] }
+
+  Note over H,S: 3. Host (or the LLM) decides to call one
+  H->>S: tools/call { name: "about", arguments: {} }
+  S-->>H: result { content: [{ type: "text", text: "DOOH Control Tower …" }] }
+      </div>
+      <p class="text-sm text-slate-600 leading-relaxed">
+        Three round-trips. The first is the protocol negotiation. The second is tool discovery — this is
+        the only place the LLM "learns" what tools exist, which is why the docstring and type hints matter:
+        they become the tool's <em>specification</em>. The third is the actual call.
+      </p>
+    </div>
+  </section>
+
+  <!-- FastMCP vs low-level -->
+  <section class="mb-12">
+    <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-500 mb-3">FastMCP vs low-level <code>Server</code> — same tool, two altitudes</h2>
+    <p class="text-slate-600 mb-4 leading-relaxed">
+      FastMCP is sugar over the lower-level <code>mcp.server.Server</code> primitive. To see what
+      FastMCP is doing for us, here's the same <code>about()</code> tool implemented at both levels.
+    </p>
+    <div class="grid md:grid-cols-2 gap-4">
+      <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+        <h3 class="text-sm font-medium text-emerald-700 mb-2">FastMCP (what we shipped)</h3>
+        <pre class="bg-slate-900 text-slate-100 rounded-md p-3 overflow-x-auto text-xs leading-relaxed"><code><span class="text-pink-300">from</span> mcp.server.fastmcp <span class="text-pink-300">import</span> FastMCP
+
+mcp = <span class="text-sky-300">FastMCP</span>(name=<span class="text-emerald-300">"DOOH Control Tower"</span>)
+
+
+<span class="text-yellow-300">@mcp.tool()</span>
+<span class="text-pink-300">def</span> <span class="text-sky-300">about</span>() -&gt; <span class="text-yellow-300">str</span>:
+    <span class="text-emerald-300">"""Describe the … server."""</span>
+    <span class="text-pink-300">return</span> <span class="text-emerald-300">"DOOH Control Tower — …"</span>
+
+
+<span class="text-pink-300">def</span> <span class="text-sky-300">main</span>() -&gt; <span class="text-yellow-300">None</span>:
+    mcp.run()</code></pre>
+        <ul class="mt-3 text-xs text-slate-600 space-y-1.5">
+          <li>✓ Sync function, no <code>asyncio</code> in user code</li>
+          <li>✓ JSON schema auto-derived from type hints + docstring</li>
+          <li>✓ <code>list_tools</code> + <code>call_tool</code> routing automatic</li>
+          <li>✓ stdio transport implicit in <code>mcp.run()</code></li>
+        </ul>
+      </div>
+
+      <div class="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
+        <h3 class="text-sm font-medium text-amber-700 mb-2">Low-level <code>Server</code> (what FastMCP hides)</h3>
+        <pre class="bg-slate-900 text-slate-100 rounded-md p-3 overflow-x-auto text-xs leading-relaxed"><code><span class="text-pink-300">import</span> asyncio
+<span class="text-pink-300">from</span> mcp.server <span class="text-pink-300">import</span> Server, NotificationOptions
+<span class="text-pink-300">from</span> mcp.server.models <span class="text-pink-300">import</span> InitializationOptions
+<span class="text-pink-300">from</span> mcp.server.stdio <span class="text-pink-300">import</span> stdio_server
+<span class="text-pink-300">import</span> mcp.types <span class="text-pink-300">as</span> types
+
+server = <span class="text-sky-300">Server</span>(<span class="text-emerald-300">"DOOH Control Tower"</span>)
+
+
+<span class="text-yellow-300">@server.list_tools()</span>
+<span class="text-pink-300">async def</span> <span class="text-sky-300">list_tools</span>() -&gt; <span class="text-yellow-300">list</span>[types.Tool]:
+    <span class="text-pink-300">return</span> [types.<span class="text-sky-300">Tool</span>(
+        name=<span class="text-emerald-300">"about"</span>,
+        description=<span class="text-emerald-300">"Describe the … server."</span>,
+        inputSchema={<span class="text-emerald-300">"type"</span>: <span class="text-emerald-300">"object"</span>,
+                     <span class="text-emerald-300">"properties"</span>: {},
+                     <span class="text-emerald-300">"required"</span>: []},
+    )]
+
+
+<span class="text-yellow-300">@server.call_tool()</span>
+<span class="text-pink-300">async def</span> <span class="text-sky-300">call_tool</span>(name, arguments):
+    <span class="text-pink-300">if</span> name == <span class="text-emerald-300">"about"</span>:
+        <span class="text-pink-300">return</span> [types.<span class="text-sky-300">TextContent</span>(
+            type=<span class="text-emerald-300">"text"</span>, text=<span class="text-emerald-300">"DOOH Control Tower — …"</span>)]
+    <span class="text-pink-300">raise</span> <span class="text-sky-300">ValueError</span>(<span class="text-emerald-300">f"unknown: {name}"</span>)
+
+
+<span class="text-pink-300">async def</span> <span class="text-sky-300">main</span>():
+    <span class="text-pink-300">async with</span> <span class="text-sky-300">stdio_server</span>() <span class="text-pink-300">as</span> (read, write):
+        <span class="text-pink-300">await</span> server.run(read, write,
+            <span class="text-sky-300">InitializationOptions</span>(
+                server_name=<span class="text-emerald-300">"DOOH Control Tower"</span>,
+                server_version=<span class="text-emerald-300">"0.1.0"</span>,
+                capabilities=server.get_capabilities(
+                    notification_options=<span class="text-sky-300">NotificationOptions</span>(),
+                    experimental_capabilities={}),
+            ))
+
+<span class="text-sky-300">asyncio</span>.run(main())</code></pre>
+        <ul class="mt-3 text-xs text-slate-600 space-y-1.5">
+          <li>✗ Async by default — manual <code>asyncio.run()</code></li>
+          <li>✗ Hand-write the JSON schema in <code>inputSchema</code></li>
+          <li>✗ Manual routing in <code>call_tool</code> for each tool name</li>
+          <li>✗ Manual <code>stdio_server()</code> + <code>InitializationOptions</code> boilerplate</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="mt-4 text-sm text-slate-600 leading-relaxed">
+      <strong>Takeaway:</strong> FastMCP is roughly 14 lines of meat vs. 35 lines of plumbing, and the
+      semantics are identical on the wire. For Phase 1, where every chunk adds one or two tools, FastMCP is
+      pure win. The low-level <code>Server</code> only earns its keep when you need custom protocol behavior
+      that the decorator API doesn't expose (e.g., streaming partial results, dynamic tool catalogs,
+      progress notifications).
+    </p>
+  </section>
+
+  <!-- Why this way -->
+  <section class="mb-10">
+    <details class="bg-white rounded-xl border border-slate-200 shadow-sm">
+      <summary class="cursor-pointer p-5 flex items-center gap-3 hover:bg-slate-50 rounded-xl">
+        <span class="chev text-slate-400">▸</span>
+        <span class="text-sm font-semibold uppercase tracking-wider text-slate-500">Why this way</span>
+        <span class="text-xs text-slate-400 ml-2">(decisions &amp; tradeoffs)</span>
+      </summary>
+      <div class="px-6 pb-6 space-y-4 text-slate-700">
+        <div>
+          <div class="font-medium text-slate-900">FastMCP over low-level <code>Server</code></div>
+          <p class="text-sm mt-1">Phase 1 tools are all schema-friendly Python functions. The decorator's auto-schema
+            from type hints maps cleanly to every tool we've roadmapped. The reflection above shows what we
+            <em>would</em> have hand-written without FastMCP — that's the cost we're avoiding.</p>
+        </div>
+        <div>
+          <div class="font-medium text-slate-900">Subpackage <code>mcp/</code> over flat <code>mcp_server.py</code></div>
+          <p class="text-sm mt-1">YAGNI said go flat. We went subpackage anyway because the roadmap already names the
+            future modules (<code>tools/campaigns.py</code>, <code>tools/screens.py</code>, <code>tools/heatmap.py</code>).
+            When the future is concrete, pre-structuring isn't speculation — it's preparation. The cost is one
+            extra <code>__init__.py</code>.</p>
+        </div>
+        <div>
+          <div class="font-medium text-slate-900">stdio first, streamable-http later (M0.4b)</div>
+          <p class="text-sm mt-1">The <code>grill-with-docs</code> skill caught that pure-SSE transport is
+            being phased out in the MCP spec in favor of <code>streamable-http</code> (which still uses SSE
+            framing under the hood for streaming responses). So we get the SSE-on-the-wire learning either
+            way. stdio first keeps the M0.3 chunk focused on the <em>protocol</em>; M0.4b — a new chunk we
+            inserted — will be a single-line transport switch (<code>mcp.run(transport="streamable-http")</code>)
+            with its own reflection page comparing wire behavior side-by-side.</p>
+        </div>
+        <div>
+          <div class="font-medium text-slate-900">Script entry over <code>python -m</code></div>
+          <p class="text-sm mt-1"><code>[project.scripts]</code> is idiomatic Python packaging. <code>uv run dooh-mcp</code>
+            reads like a deliberate command. The Claude Desktop config (M0.4) becomes a shorter, cleaner block.
+            And both <code>python -m dooh_control_tower.mcp.server</code> and <code>python server.py</code> still
+            work — defensive triple-entrypoint at no extra cost.</p>
+        </div>
+        <div>
+          <div class="font-medium text-slate-900">No <code>print()</code> in the MCP module</div>
+          <p class="text-sm mt-1">Stdio MCP <em>is</em> stdout. Any stray <code>print()</code> corrupts the
+            JSON-RPC frame stream and silently breaks the server. The one-line comment at the top of
+            <code>server.py</code> is a tripwire for future-self. Logging will go to stderr.</p>
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <!-- Workflow notes -->
+  <section class="mb-10">
+    <details class="bg-white rounded-xl border border-slate-200 shadow-sm">
+      <summary class="cursor-pointer p-5 flex items-center gap-3 hover:bg-slate-50 rounded-xl">
+        <span class="chev text-slate-400">▸</span>
+        <span class="text-sm font-semibold uppercase tracking-wider text-slate-500">Workflow notes</span>
+        <span class="text-xs text-slate-400 ml-2">(skills that fired)</span>
+      </summary>
+      <div class="px-6 pb-6 space-y-3 text-slate-700">
+        <div class="text-sm">
+          <strong>Skill used:</strong> <code>grill-with-docs</code> (~6 questions, ~15 min) before any code was written.
+        </div>
+        <div class="text-sm">
+          <strong>What it caught that I'd have missed:</strong>
+          <ul class="list-disc pl-5 mt-1 space-y-1">
+            <li>Pure-<code>sse</code> transport is deprecated in the MCP spec; <code>streamable-http</code>
+              is the modern path and still uses SSE framing. Resulted in inserting <code>M0.4b</code> as a
+              dedicated transport-comparison chunk instead of fighting the deprecated path.</li>
+            <li>Calibration: when the future is named on the roadmap, pre-structuring (subpackage)
+              isn't YAGNI — it's planning. Recorded as a memory signal for future judgment calls.</li>
+            <li>Defensive triple-entrypoint pattern (script + module + direct file) costs nothing
+              and removes a class of "but how do I run this?" friction.</li>
+          </ul>
+        </div>
+        <div class="text-sm">
+          <strong>What it didn't catch:</strong> the <code>mcp/</code> subpackage name shadows the SDK's
+          top-level <code>mcp</code> package <em>visually</em>. Python 3's absolute-import rules resolve
+          correctly (<code>from mcp.server.fastmcp …</code> still finds the SDK), but it's a footgun for
+          readers. Worth a future ADR if it ever bites.
+        </div>
+      </div>
+    </details>
+  </section>
+
+  <!-- Go deeper -->
+  <section class="mb-10">
+    <details class="bg-white rounded-xl border border-slate-200 shadow-sm">
+      <summary class="cursor-pointer p-5 flex items-center gap-3 hover:bg-slate-50 rounded-xl">
+        <span class="chev text-slate-400">▸</span>
+        <span class="text-sm font-semibold uppercase tracking-wider text-slate-500">Go deeper</span>
+        <span class="text-xs text-slate-400 ml-2">(prompts to pull on next)</span>
+      </summary>
+      <div class="px-6 pb-6 space-y-3 text-slate-700 text-sm leading-relaxed">
+        <p>Ask Claude (or the MCP spec) any of these to keep pulling on threads:</p>
+        <ul class="list-disc pl-5 space-y-2">
+          <li>"Walk me through how FastMCP generates a JSON Schema from a Python function's type hints and docstring. What happens with <code>Optional</code>, <code>Literal</code>, <code>Annotated</code>, Pydantic models?"</li>
+          <li>"Show me the raw JSON-RPC bytes for an <code>initialize</code> → <code>tools/list</code> → <code>tools/call</code> roundtrip against my <code>dooh-mcp</code> server."</li>
+          <li>"What's actually inside the MCP <code>capabilities</code> object on both sides of the initialize handshake? When would I declare a server-side capability?"</li>
+          <li>"What's the difference between MCP <em>tools</em>, <em>resources</em>, and <em>prompts</em>? Where would each apply in DOOH Control Tower?"</li>
+          <li>"How does <code>streamable-http</code> use SSE under the hood? Show me a curl trace of a streamed tool response."</li>
+          <li>"What protocol features (sampling, progress notifications, logging) does FastMCP expose vs. hide? When would I drop down to the low-level <code>Server</code>?"</li>
+        </ul>
+      </div>
+    </details>
+  </section>
+
+  <!-- Footer -->
+  <footer class="mt-12 pt-6 border-t border-slate-200 text-xs text-slate-500 flex flex-wrap items-center gap-3">
+    <span>chunk <code>M0.3</code></span>
+    <span>·</span>
+    <span>shipped <code>2026-05-30</code></span>
+    <span>·</span>
+    <span>commit <code>beab559</code></span>
+    <span>·</span>
+    <a class="text-slate-600 underline hover:text-slate-900" href="../../roadmap.md">roadmap</a>
+    <span>·</span>
+    <a class="text-slate-600 underline hover:text-slate-900" href="../../src/dooh_control_tower/mcp/server.py">server.py</a>
+    <span>·</span>
+    <span>next: <code>M0.4</code> — register MCP server in Claude Desktop</span>
+  </footer>
+
+</div>
+
+</body>
+</html>
