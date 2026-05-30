@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>M0.4b — stdio vs streamable-http</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "dark", securityLevel: "loose" });
+</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .wire { font-size: 0.78rem; line-height: 1.45; }
+  details > summary { cursor: pointer; user-select: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "▸ "; color: #94a3b8; }
+  details[open] > summary::before { content: "▾ "; color: #94a3b8; }
+  .mermaid { background: #0f172a; border-radius: 0.5rem; padding: 1rem; }
+</style>
+</head>
+<body class="bg-slate-950 text-slate-100">
+<div class="max-w-5xl mx-auto px-6 py-10 space-y-12">
+
+  <!-- Header -->
+  <header class="space-y-2 border-b border-slate-800 pb-6">
+    <div class="text-xs uppercase tracking-widest text-slate-400">DOOH Control Tower — Reflection M0.4b</div>
+    <h1 class="text-3xl font-semibold text-slate-50">stdio vs streamable-http: one FastMCP, two transports</h1>
+    <p class="text-slate-300">
+      M0.3 served the MCP server over stdio for Claude Desktop. M0.4b mounts the
+      <em>same</em> <code>FastMCP</code> instance into our FastAPI app as a streamable-http
+      endpoint at <code>/mcp</code>, so any HTTP client can talk to it. The interesting
+      part isn't "we added a second transport" — it's how little had to change to do it.
+    </p>
+  </header>
+
+  <!-- Big Picture -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">Big picture</h2>
+    <p class="text-slate-300">
+      One <code>FastMCP</code> object owns the tool registry. Two transports plug into it.
+      Claude Desktop launches us as a subprocess and speaks JSON-RPC over the stdin/stdout
+      pipe. HTTP clients POST to <code>/mcp</code> on uvicorn and read SSE frames in response.
+      Neither knows about the other.
+    </p>
+    <div class="mermaid">
+flowchart LR
+    classDef inst fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    classDef proc fill:#0f172a,stroke:#334155,color:#cbd5e1
+    classDef client fill:#0f172a,stroke:#94a3b8,color:#cbd5e1
+    cd["Claude Desktop"]:::client -. "stdio · JSON-RPC over pipe" .-> stdio["dooh-mcp script<br/>(FastMCP stdio runner)"]:::proc
+    curl["curl / Pydantic AI / browser"]:::client -. "HTTP POST · SSE response" .-> http["FastAPI · /mcp mount<br/>(streamable_http_app)"]:::proc
+    subgraph oneprocess["uvicorn worker"]
+      http
+    end
+    subgraph claudedesk["Claude Desktop subprocess"]
+      stdio
+    end
+    stdio --> reg[("same FastMCP instance<br/>@mcp.tool def about(): ...")]:::inst
+    http --> reg
+    </div>
+    <p class="text-slate-400 text-sm">
+      The <code>FastMCP</code> instance is the source of truth for tools, resources, and
+      prompts. Transports are how clients <em>reach</em> it.
+    </p>
+  </section>
+
+  <!-- What we did -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">What we did</h2>
+    <ol class="list-decimal list-inside space-y-1 text-slate-300">
+      <li>Added <code>stateless_http=True</code> and <code>streamable_http_path = "/"</code> to the <code>FastMCP</code> constructor in <code>src/dooh_control_tower/mcp/server.py</code>.</li>
+      <li>In <code>src/dooh_control_tower/app.py</code>, imported the <code>mcp</code> instance and mounted <code>mcp.streamable_http_app()</code> at <code>/mcp</code>.</li>
+      <li>Added a <code>lifespan</code> async context manager that runs <code>mcp.session_manager.run()</code> for the life of the uvicorn worker.</li>
+      <li>Wrote <code>scripts/probe-streamable-http.sh</code> — three curl POSTs (initialize, tools/list, tools/call) that print raw SSE frames.</li>
+      <li>Verified end-to-end: <code>/health</code> still returns JSON, the probe returns three clean SSE frames, stdio path remains unchanged (Claude Desktop still calls <code>about</code> successfully).</li>
+    </ol>
+  </section>
+
+  <!-- How the wire looks -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">How the wire looks (side by side)</h2>
+    <p class="text-slate-300">
+      Same JSON-RPC <em>payload</em>, different transport envelopes. The pedagogical point
+      of this chunk: see the envelope difference with your own eyes.
+    </p>
+
+    <div class="grid md:grid-cols-2 gap-4">
+      <!-- stdio side -->
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
+        <div class="text-sm uppercase tracking-widest text-sky-400">stdio (M0.3)</div>
+        <div class="text-slate-300 text-sm">Newline-delimited JSON-RPC over the process pipe. One message per line. Connection is the process.</div>
+        <pre class="wire bg-slate-950 text-slate-200 p-3 rounded whitespace-pre-wrap break-all"><span class="text-slate-500"># client → server (stdin)</span>
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{...}}
+
+<span class="text-slate-500"># server → client (stdout)</span>
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{...},"serverInfo":{"name":"DOOH Control Tower","version":"1.27.2"}}}</pre>
+      </div>
+
+      <!-- streamable-http side -->
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
+        <div class="text-sm uppercase tracking-widest text-emerald-400">streamable-http (M0.4b)</div>
+        <div class="text-slate-300 text-sm">HTTP POST. Response is <code>Content-Type: text/event-stream</code>. Each event is <code>event: NAME</code> + <code>data: PAYLOAD</code> + blank line.</div>
+        <pre class="wire bg-slate-950 text-slate-200 p-3 rounded whitespace-pre-wrap break-all"><span class="text-slate-500"># client → server (HTTP POST /mcp)</span>
+POST /mcp/ HTTP/1.1
+Content-Type: application/json
+Accept: application/json, text/event-stream
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{...}}
+
+<span class="text-slate-500"># server → client (SSE response body)</span>
+event: message
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-11-25","capabilities":{...},"serverInfo":{"name":"DOOH Control Tower","version":"1.27.2"}}}
+</pre>
+      </div>
+    </div>
+
+    <p class="text-slate-400 text-sm">
+      The <em>payload</em> is identical JSON-RPC 2.0. stdio uses a line as the message
+      boundary; SSE uses <code>\n\n</code>. SSE also gives the server a way to push more
+      events on the same response (progress notifications, multi-part results) without a
+      second HTTP round-trip. We don't use that yet — but stateless+SSE keeps the door open.
+    </p>
+  </section>
+
+  <!-- Code -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">The code (the whole change)</h2>
+    <div class="grid md:grid-cols-2 gap-4">
+      <div class="space-y-1">
+        <div class="text-sm text-slate-400">src/dooh_control_tower/mcp/server.py</div>
+        <pre class="wire bg-slate-950 border border-slate-800 text-slate-200 p-3 rounded overflow-x-auto"># stdio MCP wire uses stdout for JSON-RPC frames — never print() in this module.
+from mcp.server.fastmcp import FastMCP
+
+# stateless_http=True: no session IDs, every HTTP request stands alone. Flag is
+# a no-op for stdio transport. streamable_http_path="/" avoids the default
+# `/mcp` suffix when mounted (we mount at `/mcp` ourselves in app.py).
+mcp = FastMCP(name="DOOH Control Tower", stateless_http=True)
+mcp.settings.streamable_http_path = "/"
+
+
+@mcp.tool()
+def about() -> str:
+    """Describe the DOOH Control Tower MCP server."""
+    return (
+        "DOOH Control Tower — a chat-driven operational tool ..."
+    )
+
+
+def main() -> None:
+    mcp.run()  # stdio
+
+
+if __name__ == "__main__":
+    main()</pre>
+      </div>
+      <div class="space-y-1">
+        <div class="text-sm text-slate-400">src/dooh_control_tower/app.py</div>
+        <pre class="wire bg-slate-950 border border-slate-800 text-slate-200 p-3 rounded overflow-x-auto">import contextlib
+
+from fastapi import FastAPI
+
+from dooh_control_tower.mcp.server import mcp
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    # FastMCP's session manager owns streamable-http connection
+    # lifecycle — must run exactly once per process.
+    async with mcp.session_manager.run():
+        yield
+
+
+app = FastAPI(title="DOOH Control Tower", version="0.1.0", lifespan=lifespan)
+
+
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+app.mount("/mcp", mcp.streamable_http_app())</pre>
+      </div>
+    </div>
+    <p class="text-slate-400 text-sm">
+      Total diff: 3 import lines, the lifespan, one mount call, two FastMCP constructor
+      changes. The transport plumbing is FastMCP's job; we just <em>composed</em> two
+      ASGI apps together.
+    </p>
+  </section>
+
+  <!-- Uvicorn mental model -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">Uvicorn mental model (why <code>/health</code> and <code>/mcp</code> coexist cleanly)</h2>
+    <div class="mermaid">
+flowchart TB
+    classDef proc fill:#0f172a,stroke:#334155,color:#cbd5e1
+    classDef loop fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    subgraph w["uvicorn worker (1 process, 1 event loop by default)"]
+      loop["asyncio event loop<br/>(juggles in-flight requests cooperatively)"]:::loop
+      fastapi["FastAPI ASGI app"]:::proc
+      mcphttp["streamable_http_app (Starlette routes)"]:::proc
+      h["/health handler"]:::proc
+      m["/mcp/* handlers"]:::proc
+    end
+    loop --> fastapi
+    fastapi --> h
+    fastapi -. "app.mount('/mcp', ...)" .-> mcphttp
+    mcphttp --> m
+    </div>
+    <ul class="list-disc list-inside text-slate-300 space-y-1 text-sm">
+      <li><b>One event loop juggles both.</b> Sub-millisecond <code>/health</code> calls interleave with long-lived SSE streams. As long as everything is <code>async</code>, neither starves the other.</li>
+      <li><b>Blocking code = self-DoS.</b> A sync <code>time.sleep</code> or a sync DB call freezes the whole worker. Everything we write goes async-first.</li>
+      <li><b>Shared memory = shared state.</b> The <code>mcp</code> instance, the session manager, FastAPI's <code>app.state</code> — all live in one process. That's why the lifespan runs once per worker.</li>
+      <li><b>Scaling later = <code>--workers N</code>.</b> Stateless + SSE makes that safe — no session affinity to worry about.</li>
+    </ul>
+  </section>
+
+  <!-- Why this way (collapsed) -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">Why this way (decisions and trade-offs)</h2>
+
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4 open:pb-4">
+      <summary class="font-medium text-slate-100">Why mount into FastAPI instead of running a separate HTTP server?</summary>
+      <div class="mt-3 text-slate-300 space-y-2 text-sm">
+        <p><b>Alternative:</b> <code>mcp.run(transport="streamable-http")</code> spins up its own uvicorn on its own port.</p>
+        <p><b>Why mount instead:</b> one process serves both <code>/health</code> and <code>/mcp</code>. Matches the eventual deploy shape (one container, one port). Demonstrates the ASGI mount pattern — a real-world skill we'll reuse for admin routes, status pages, etc. The cost is one lifespan context manager.</p>
+        <p><b>Roadmap test:</b> M0.5+ adds tools that will share infra (DB connection pool, observability) with the rest of the app. Mounting is the natural shape for that.</p>
+      </div>
+    </details>
+
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4 open:pb-4">
+      <summary class="font-medium text-slate-100">Why <code>stateless_http=True</code>?</summary>
+      <div class="mt-3 text-slate-300 space-y-2 text-sm">
+        <p><b>Stateful (default):</b> server tracks a session ID per client. Required for server-initiated messages — progress notifications on long tool calls, resource subscriptions, sampling requests.</p>
+        <p><b>Stateless (our pick):</b> every HTTP request is independent. No session memory. Recommended for scalability — any worker can serve any request.</p>
+        <p><b>Why now:</b> none of our current tools push notifications. They take args, return a value, done. Stateful would be unused complexity.</p>
+        <p><b>When to flip:</b> the moment we add a tool that streams progress or pushes "this campaign changed" events. Likely M5/M6.</p>
+        <p><b>Common confusion:</b> "session" here is <em>MCP protocol session</em>, not application session. A campaign-being-edited still lives in the DB regardless.</p>
+      </div>
+    </details>
+
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4 open:pb-4">
+      <summary class="font-medium text-slate-100">Why <code>streamable_http_path = "/"</code>?</summary>
+      <div class="mt-3 text-slate-300 space-y-2 text-sm">
+        <p>Without this override, <code>streamable_http_app()</code> serves at the path <code>/mcp</code> by default. If we mount that ASGI app at <code>/mcp</code> in FastAPI, the final URL is <code>/mcp/mcp</code> — ugly, and a footgun for anyone trying to remember the URL.</p>
+        <p>Setting <code>streamable_http_path = "/"</code> tells FastMCP "you're at the root of whatever's mounting you" — so the final URL is just <code>/mcp</code>.</p>
+        <p>grill-with-docs caught this — would have shipped <code>/mcp/mcp</code> by accident otherwise.</p>
+      </div>
+    </details>
+
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4 open:pb-4">
+      <summary class="font-medium text-slate-100">Why SSE responses (not JSON) for the streamable-http transport?</summary>
+      <div class="mt-3 text-slate-300 space-y-2 text-sm">
+        <p>FastMCP supports <code>json_response=True</code> — one JSON blob per request, no streaming. Simpler over the wire.</p>
+        <p><b>Why we picked SSE anyway:</b> the chunk goal was literally "observe SSE on the wire." Pedagogically, SSE is the more interesting wire shape because it's what enables MCP's server-push features. We get the SSE format now even though we don't yet push events — when we add notifications, the wire shape doesn't change, just what flows over it.</p>
+      </div>
+    </details>
+
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4 open:pb-4">
+      <summary class="font-medium text-slate-100">Why keep stdio at all if HTTP works?</summary>
+      <div class="mt-3 text-slate-300 space-y-2 text-sm">
+        <p>Claude Desktop's MCP integration prefers stdio for local servers — no network, no port conflicts, no TLS to manage, automatic subprocess lifecycle (Claude Desktop owns the process). The cost of supporting both is approximately zero (one extra constructor flag), and the benefit is "works in both contexts" — Claude Desktop (stdio) and Pydantic AI / web (HTTP).</p>
+      </div>
+    </details>
+  </section>
+
+  <!-- Workflow notes -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">Workflow notes</h2>
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4 open:pb-4" open>
+      <summary class="font-medium text-slate-100">What <code>grill-with-docs</code> caught on this chunk</summary>
+      <ul class="mt-3 list-disc list-inside text-slate-300 space-y-1 text-sm">
+        <li><b>The <code>/mcp/mcp</code> footgun.</b> The default <code>streamable_http_path</code> is <code>/mcp</code>. Mounting that under <code>/mcp</code> would have given us a stuttering URL. Docs surfaced it; we set the override.</li>
+        <li><b>The mandatory lifespan.</b> <code>mcp.session_manager.run()</code> must be entered as an async context for the worker's lifetime. Without it, the first request 500s with a non-obvious error. Docs showed it — we copied the pattern.</li>
+        <li><b>"Session" disambiguation.</b> MCP protocol session ≠ application session. Caught before we accidentally over-coupled stateful mode to "we have multi-step tools later."</li>
+        <li><b>Stateless + SSE is a real config combo.</b> Initial intuition was "stateless implies no streaming." Docs show <code>stateless_http=True</code> alone keeps SSE; only <code>json_response=True</code> turns SSE off. Useful nuance for explaining the trade space.</li>
+      </ul>
+    </details>
+  </section>
+
+  <!-- Go deeper -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">Go deeper (prompts to pull on)</h2>
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+      <summary class="font-medium text-slate-100">Six prompts that would each open a new branch of the design tree</summary>
+      <ol class="mt-3 list-decimal list-inside text-slate-300 space-y-1 text-sm">
+        <li>"Walk me through what the SSE wire looks like for a tool that streams progress notifications — what extra <code>event: message</code> frames show up between request and final result?"</li>
+        <li>"How would we flip to stateful mode? What changes in the FastMCP constructor, the session manager, the wire (session ID header), and on the client side?"</li>
+        <li>"Why does Claude Desktop prefer stdio for local servers when HTTP also works? What's the trade-off for cloud-hosted MCP servers?"</li>
+        <li>"Show me the Starlette routes that <code>mcp.streamable_http_app()</code> builds under the hood — what endpoints, what methods, what middleware?"</li>
+        <li>"What's the resumability story? If a client drops mid-stream on a long tool call, can it reconnect to the same response? What's the contract?"</li>
+        <li>"With <code>--workers N</code>, what changes? Why is stateless safe across workers but stateful needs sticky sessions or a shared store?"</li>
+      </ol>
+    </details>
+  </section>
+
+  <!-- Footer -->
+  <footer class="border-t border-slate-800 pt-6 text-sm text-slate-400 space-y-1">
+    <div>Chunk: <code>M0.4b</code> · Shipped: 2026-05-30 · Commit: <code>3801198</code></div>
+    <div>Roadmap: <a class="underline text-slate-300" href="../../roadmap.md">roadmap.md</a> · Code: <a class="underline text-slate-300" href="../../src/dooh_control_tower/app.py">app.py</a>, <a class="underline text-slate-300" href="../../src/dooh_control_tower/mcp/server.py">mcp/server.py</a>, <a class="underline text-slate-300" href="../../scripts/probe-streamable-http.sh">scripts/probe-streamable-http.sh</a></div>
+    <div>Previous: <a class="underline text-slate-300" href="./m0-3-mcp-hello-world.html">M0.3 — FastMCP hello-world over stdio</a></div>
+  </footer>
+
+</div>
+</body>
+</html>

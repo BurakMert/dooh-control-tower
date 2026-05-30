@@ -23,7 +23,7 @@ Goal: shippable demo of all three hero journeys (planning, diagnosis, reporting)
 - [x] **M0.2** — Python project setup (pyproject.toml + uv + ruff), FastAPI hello-world on `/health`. *Shipped 2026-05-29.*
 - [x] **M0.3** — MCP server hello-world (Python `mcp` lib), one tool returning a static string. *Shipped 2026-05-30. Reflection: [`docs/reflections/m0-3-mcp-hello-world.html`](docs/reflections/m0-3-mcp-hello-world.html).*
 - [x] **M0.4** — Register MCP server in Claude Desktop config; verify the tool appears and calls. *Shipped 2026-05-30. Verified via Connectors panel + live `about` call.*
-- [ ] **M0.4b** — Also expose the MCP server over `streamable-http`; observe SSE on the wire; reflection comparing stdio vs streamable-http side-by-side.
+- [x] **M0.4b** — Also expose the MCP server over `streamable-http`; observe SSE on the wire; reflection comparing stdio vs streamable-http side-by-side. *Shipped 2026-05-30. Reflection: [`docs/reflections/m0-4b-stdio-vs-streamable-http.html`](docs/reflections/m0-4b-stdio-vs-streamable-http.html).*
 - [ ] **M0.5** — First domain-shaped tool: `health_check` returning a structured response.
 - [ ] **M0.6** — Docker compose with Postgres + PostGIS; verify connection from FastAPI.
 
@@ -106,4 +106,4 @@ Milestone shape (to be detailed once Phase 1 M7.2 lessons-learned is written —
 ---
 
 ## Today's start
-**Next chunk: M0.4b** — Also expose the `dooh-mcp` server over `streamable-http`; observe SSE frames on the wire (curl or browser devtools); ship a layered reflection comparing **stdio vs streamable-http** side-by-side (when each transport makes sense, what the wire actually looks like, what changes in the server code). Concept-introducing chunk — reflection expected.
+**Next chunk: M0.5** — First domain-shaped tool: `health_check` returning a *structured* response (not just a string). This is the first tool that returns a `BaseModel`-typed result rather than a string — pulls in FastMCP's output schema generation. Concept-introducing chunk — reflection expected (focus: structured output schemas, why agents care about typed results).
