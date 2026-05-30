@@ -1,7 +1,11 @@
 # stdio MCP wire uses stdout for JSON-RPC frames — never print() in this module.
 from mcp.server.fastmcp import FastMCP
 
-mcp = FastMCP(name="DOOH Control Tower")
+# stateless_http=True: no session IDs, every HTTP request stands alone. Flag is
+# a no-op for stdio transport. streamable_http_path="/" avoids the default
+# `/mcp` suffix when mounted (we mount at `/mcp` ourselves in app.py).
+mcp = FastMCP(name="DOOH Control Tower", stateless_http=True)
+mcp.settings.streamable_http_path = "/"
 
 
 @mcp.tool()
