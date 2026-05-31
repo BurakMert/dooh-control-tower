@@ -26,3 +26,4 @@ Layered HTML reflection pages — what we built, how it works, decisions, prompt
 
 - [`m0-3-mcp-hello-world.html`](./docs/reflections/m0-3-mcp-hello-world.html) — FastMCP hello-world over stdio (M0.3)
 - [`m0-4b-stdio-vs-streamable-http.html`](./docs/reflections/m0-4b-stdio-vs-streamable-http.html) — one FastMCP instance, two transports: stdio + streamable-http/SSE (M0.4b)
+- [`m0-5-structured-output.html`](./docs/reflections/m0-5-structured-output.html) — typed Pydantic returns, auto-generated outputSchema, structuredContent on the wire (M0.5)

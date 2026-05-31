@@ -24,7 +24,7 @@ Goal: shippable demo of all three hero journeys (planning, diagnosis, reporting)
 - [x] **M0.3** — MCP server hello-world (Python `mcp` lib), one tool returning a static string. *Shipped 2026-05-30. Reflection: [`docs/reflections/m0-3-mcp-hello-world.html`](docs/reflections/m0-3-mcp-hello-world.html).*
 - [x] **M0.4** — Register MCP server in Claude Desktop config; verify the tool appears and calls. *Shipped 2026-05-30. Verified via Connectors panel + live `about` call.*
 - [x] **M0.4b** — Also expose the MCP server over `streamable-http`; observe SSE on the wire; reflection comparing stdio vs streamable-http side-by-side. *Shipped 2026-05-30. Reflection: [`docs/reflections/m0-4b-stdio-vs-streamable-http.html`](docs/reflections/m0-4b-stdio-vs-streamable-http.html).*
-- [ ] **M0.5** — First domain-shaped tool: `health_check` returning a structured response.
+- [x] **M0.5** — First domain-shaped tool: `health_check` returning a structured response. *Shipped 2026-05-31. Reflection: [`docs/reflections/m0-5-structured-output.html`](docs/reflections/m0-5-structured-output.html).*
 - [ ] **M0.6** — Docker compose with Postgres + PostGIS; verify connection from FastAPI.
 
 ### M1 — Domain model & synthetic network (~5 chunks)
@@ -106,4 +106,4 @@ Milestone shape (to be detailed once Phase 1 M7.2 lessons-learned is written —
 ---
 
 ## Today's start
-**Next chunk: M0.5** — First domain-shaped tool: `health_check` returning a *structured* response (not just a string). This is the first tool that returns a `BaseModel`-typed result rather than a string — pulls in FastMCP's output schema generation. Concept-introducing chunk — reflection expected (focus: structured output schemas, why agents care about typed results).
+**Next chunk: M0.6** — Docker compose with Postgres + PostGIS; verify connection from FastAPI. Plumbing-heavy concept chunk: introduces our first piece of stateful infra. Likely warrants `grill-with-docs` (PostGIS image choice, version pin, async driver selection — these are library-binding decisions worth grilling). Reflection expected (focus: why PostGIS now even before geo features land, dev-time docker-compose vs prod, connection pooling, the lifespan ritual extended to a real resource).

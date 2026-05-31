@@ -1,0 +1,362 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>M0.5 — structured output: typed tool results</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({ startOnLoad: true, theme: "dark", securityLevel: "loose" });
+</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .wire { font-size: 0.78rem; line-height: 1.45; }
+  details > summary { cursor: pointer; user-select: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "▸ "; color: #94a3b8; }
+  details[open] > summary::before { content: "▾ "; color: #94a3b8; }
+  .mermaid { background: #0f172a; border-radius: 0.5rem; padding: 1rem; }
+  .pill { display: inline-block; padding: 0 0.5rem; border-radius: 0.25rem; font-size: 0.7rem; letter-spacing: 0.05em; text-transform: uppercase; }
+</style>
+</head>
+<body class="bg-slate-950 text-slate-100">
+<div class="max-w-5xl mx-auto px-6 py-10 space-y-12">
+
+  <!-- Header -->
+  <header class="space-y-2 border-b border-slate-800 pb-6">
+    <div class="text-xs uppercase tracking-widest text-slate-400">DOOH Control Tower — Reflection M0.5</div>
+    <h1 class="text-3xl font-semibold text-slate-50">Structured output: typed tool results, schema for free</h1>
+    <p class="text-slate-300">
+      <code>about()</code> from M0.3 returns a string — the agent gets prose it has to
+      re-parse. <code>health_check()</code> returns a Pydantic <code>BaseModel</code> —
+      FastMCP auto-generates a JSON <code>outputSchema</code> from the type hint, the wire
+      response includes a <code>structuredContent</code> field the agent can read by name,
+      and downstream tools (mcp-ui, Pydantic AI) can validate against the same schema.
+      This is the first chunk where the *shape of the data* is the lesson, not the transport.
+    </p>
+  </header>
+
+  <!-- Big Picture -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">Big picture</h2>
+    <p class="text-slate-300">
+      A typed return value flows through three FastMCP layers: Pydantic generates the
+      JSON Schema from the type hints; FastMCP attaches that schema to the tool's
+      <code>tools/list</code> response; and on <code>tools/call</code>, FastMCP runs the
+      tool, validates the result against the schema, and emits both a human-readable
+      <code>content[text]</code> rendering and the typed <code>structuredContent</code> object.
+    </p>
+    <div class="mermaid">
+flowchart LR
+    classDef code fill:#1e293b,stroke:#38bdf8,color:#e2e8f0
+    classDef step fill:#0f172a,stroke:#334155,color:#cbd5e1
+    classDef wire fill:#0f172a,stroke:#10b981,color:#d1fae5
+    hint["health_check() -> HealthCheck"]:::code --> pyd["Pydantic<br/>BaseModel schema"]:::step
+    pyd --> schema["JSON Schema<br/>(enum, $defs, format)"]:::step
+    schema --> list["tools/list response:<br/>tool.outputSchema"]:::wire
+    schema --> call["tools/call response:<br/>structuredContent (validated)"]:::wire
+    schema --> text["tools/call response:<br/>content[text] (pretty JSON)"]:::wire
+    </div>
+    <p class="text-slate-400 text-sm">
+      One type hint, three wire-level artifacts. The agent gets prose
+      <em>and</em> structured data <em>and</em> a contract to validate them against —
+      from a single line of code.
+    </p>
+  </section>
+
+  <!-- What we did -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">What we did</h2>
+    <ol class="list-decimal list-inside space-y-1 text-slate-300">
+      <li>Added <code>pydantic</code> as an explicit direct dependency (was transitive via <code>mcp[cli]</code>) so future MCP SDK changes can't silently downgrade it on us.</li>
+      <li>Created <code>src/dooh_control_tower/mcp/tools/health.py</code> with two Pydantic models — <code>ComponentStatus</code> and <code>HealthCheck</code> — and a <code>health_check()</code> tool returning the latter.</li>
+      <li>Extracted the existing <code>about</code> tool into <code>tools/about.py</code> for consistency. Both tools live under <code>mcp/tools/</code> now.</li>
+      <li>Added <code>tools/__init__.py</code> as a side-effect import (each module registers its tools via <code>@mcp.tool()</code> at import time). <code>server.py</code> triggers the package import at the bottom of the file to avoid a circular import.</li>
+      <li>Extended <code>scripts/probe-streamable-http.sh</code> to also call <code>health_check</code>, captured the SSE frames, confirmed the rich outputSchema and structuredContent.</li>
+    </ol>
+  </section>
+
+  <!-- Side by side -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">String vs typed return — what the agent sees</h2>
+    <p class="text-slate-300">
+      Both tools live in the same server, both ride the same transport. The only difference
+      is the return type. Watch the wire diverge.
+    </p>
+
+    <div class="grid md:grid-cols-2 gap-4">
+      <!-- about side -->
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
+        <div class="space-x-2">
+          <span class="pill bg-sky-900 text-sky-200">about</span>
+          <span class="pill bg-slate-800 text-slate-300">returns: str</span>
+        </div>
+        <div class="text-sm text-slate-400">outputSchema (from <code>tools/list</code>)</div>
+        <pre class="wire bg-slate-950 text-slate-200 p-3 rounded whitespace-pre-wrap break-all">{
+  "properties": {
+    "result": {"title": "Result", "type": "string"}
+  },
+  "required": ["result"],
+  "title": "aboutOutput",
+  "type": "object"
+}</pre>
+        <div class="text-sm text-slate-400">structuredContent (from <code>tools/call</code>)</div>
+        <pre class="wire bg-slate-950 text-slate-200 p-3 rounded whitespace-pre-wrap break-all">{
+  "result": "DOOH Control Tower — a chat-driven operational tool ..."
+}</pre>
+        <p class="text-slate-400 text-sm">FastMCP wraps the string in <code>{result: ...}</code> so the wire shape is always an object. Agent still has to parse prose to get any specific fact out.</p>
+      </div>
+
+      <!-- health_check side -->
+      <div class="bg-slate-900 border border-slate-800 rounded-lg p-4 space-y-2">
+        <div class="space-x-2">
+          <span class="pill bg-emerald-900 text-emerald-200">health_check</span>
+          <span class="pill bg-slate-800 text-slate-300">returns: HealthCheck</span>
+        </div>
+        <div class="text-sm text-slate-400">outputSchema (from <code>tools/list</code>)</div>
+        <pre class="wire bg-slate-950 text-slate-200 p-3 rounded whitespace-pre-wrap break-all">{
+  "$defs": {
+    "ComponentStatus": {
+      "properties": {
+        "name": {"type": "string"},
+        "status": {"enum": ["ok","degraded","down"], "type": "string"},
+        "detail": {"anyOf": [{"type":"string"},{"type":"null"}], "default": null}
+      },
+      "required": ["name","status"],
+      "type": "object"
+    }
+  },
+  "properties": {
+    "status": {"enum": ["ok","degraded","down"], "type": "string"},
+    "timestamp": {"format": "date-time", "type": "string"},
+    "components": {"items": {"$ref": "#/$defs/ComponentStatus"}, "type": "array"}
+  },
+  "required": ["status","timestamp","components"],
+  "type": "object"
+}</pre>
+        <div class="text-sm text-slate-400">structuredContent (from <code>tools/call</code>)</div>
+        <pre class="wire bg-slate-950 text-slate-200 p-3 rounded whitespace-pre-wrap break-all">{
+  "status": "ok",
+  "timestamp": "2026-05-31T11:45:48.909921Z",
+  "components": [
+    {"name": "mcp", "status": "ok", "detail": null}
+  ]
+}</pre>
+        <p class="text-slate-400 text-sm">Agent can ask "what's the status of <code>mcp</code>?" and read <code>components[0].status</code> directly — no prose parsing.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- Pydantic to JSON Schema -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">How the schema is generated (Pydantic → JSON Schema)</h2>
+    <p class="text-slate-300">
+      FastMCP doesn't generate schemas itself — Pydantic does. FastMCP just collects them
+      from the tool's return-type hint and attaches them to the protocol response.
+      Every type hint maps to a JSON Schema construct:
+    </p>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm border border-slate-800 rounded">
+        <thead class="bg-slate-900 text-slate-200">
+          <tr>
+            <th class="text-left p-2 border-b border-slate-800">Python type</th>
+            <th class="text-left p-2 border-b border-slate-800">JSON Schema</th>
+            <th class="text-left p-2 border-b border-slate-800">Why it matters to an agent</th>
+          </tr>
+        </thead>
+        <tbody class="text-slate-300">
+          <tr class="border-b border-slate-900">
+            <td class="p-2"><code>Literal["ok","degraded","down"]</code></td>
+            <td class="p-2"><code>{enum: ["ok","degraded","down"]}</code></td>
+            <td class="p-2">Agent knows the finite set up front — can branch deterministically.</td>
+          </tr>
+          <tr class="border-b border-slate-900">
+            <td class="p-2"><code>datetime</code></td>
+            <td class="p-2"><code>{type: "string", format: "date-time"}</code></td>
+            <td class="p-2">Wire is RFC-3339 string. Agents and validators recognize the format.</td>
+          </tr>
+          <tr class="border-b border-slate-900">
+            <td class="p-2"><code>str | None</code></td>
+            <td class="p-2"><code>{anyOf: [{type:"string"},{type:"null"}], default: null}</code></td>
+            <td class="p-2">Optionality is explicit — agent doesn't guess whether a field can be missing.</td>
+          </tr>
+          <tr class="border-b border-slate-900">
+            <td class="p-2"><code>list[ComponentStatus]</code></td>
+            <td class="p-2"><code>{type: "array", items: {$ref: "#/$defs/ComponentStatus"}}</code></td>
+            <td class="p-2">Nested types are extracted once into <code>$defs</code> and referenced — no duplication, cycle-safe.</td>
+          </tr>
+          <tr>
+            <td class="p-2"><code>BaseModel</code> subclass</td>
+            <td class="p-2"><code>{type: "object", properties: {...}, required: [...]}</code></td>
+            <td class="p-2">Field names, types, and required-ness are all explicit.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="text-slate-400 text-sm">
+      A future M2 tool returning <code>list[Campaign]</code> with nested <code>Targeting</code>
+      and <code>Schedule</code> models will get a multi-level <code>$defs</code> tree the
+      same way — no extra work.
+    </p>
+  </section>
+
+  <!-- The code -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">The code</h2>
+    <div class="grid md:grid-cols-2 gap-4">
+      <div class="space-y-1">
+        <div class="text-sm text-slate-400">src/dooh_control_tower/mcp/tools/health.py</div>
+        <pre class="wire bg-slate-950 border border-slate-800 text-slate-200 p-3 rounded overflow-x-auto">from datetime import UTC, datetime
+from typing import Literal
+
+from pydantic import BaseModel
+
+from dooh_control_tower.mcp.server import mcp
+
+
+class ComponentStatus(BaseModel):
+    name: str
+    status: Literal["ok", "degraded", "down"]
+    detail: str | None = None
+
+
+class HealthCheck(BaseModel):
+    status: Literal["ok", "degraded", "down"]
+    timestamp: datetime
+    components: list[ComponentStatus]
+
+
+@mcp.tool()
+def health_check() -> HealthCheck:
+    """Report the operational health of ..."""
+    return HealthCheck(
+        status="ok",
+        timestamp=datetime.now(UTC),
+        components=[
+            ComponentStatus(name="mcp", status="ok"),
+        ],
+    )</pre>
+      </div>
+      <div class="space-y-1">
+        <div class="text-sm text-slate-400">src/dooh_control_tower/mcp/tools/__init__.py</div>
+        <pre class="wire bg-slate-950 border border-slate-800 text-slate-200 p-3 rounded overflow-x-auto"># Side-effect imports: each module registers its tools by
+# applying the @mcp.tool() decorator at import time.
+from dooh_control_tower.mcp.tools import (
+    about,
+    health,
+)  # noqa: F401</pre>
+        <div class="text-sm text-slate-400 mt-3">src/dooh_control_tower/mcp/server.py (tail)</div>
+        <pre class="wire bg-slate-950 border border-slate-800 text-slate-200 p-3 rounded overflow-x-auto">mcp = FastMCP(name="DOOH Control Tower", stateless_http=True)
+mcp.settings.streamable_http_path = "/"
+
+# Side-effect import: each module under .tools registers its
+# tools via @mcp.tool() decorators. Must be at bottom — tools
+# modules import `mcp` from this file, so a top-of-file import
+# would be circular.
+from dooh_control_tower.mcp import tools  # noqa: E402, F401</pre>
+      </div>
+    </div>
+  </section>
+
+  <!-- Why this way -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">Why this way (decisions and trade-offs)</h2>
+
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4 open:pb-4">
+      <summary class="font-medium text-slate-100">Why a structured return type at all? Why not just JSON-stringify in the tool body?</summary>
+      <div class="mt-3 text-slate-300 space-y-2 text-sm">
+        <p>You <em>could</em> have the tool return a string of JSON. But then:</p>
+        <ul class="list-disc list-inside space-y-1">
+          <li>The agent gets a blob it has to <code>JSON.parse</code> with no schema to validate against.</li>
+          <li>The wire <code>outputSchema</code> is wrong — it'll say "string" when the content is structured.</li>
+          <li>Downstream consumers (mcp-ui surfaces in M2, Pydantic AI client in Phase 2) can't introspect the shape.</li>
+          <li>Refactoring the model is silent — no compile-time error if a field is renamed.</li>
+        </ul>
+        <p>Pydantic return types make the shape part of the contract, not the convention.</p>
+      </div>
+    </details>
+
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4 open:pb-4">
+      <summary class="font-medium text-slate-100">Why drop <code>uptime_seconds</code>?</summary>
+      <div class="mt-3 text-slate-300 space-y-2 text-sm">
+        <p>Uptime sounds simple but semantics shift by transport: stdio uptime is "since Claude Desktop spawned this subprocess" (resets on every chat). HTTP uptime is "since uvicorn worker booted" (different across workers). Per-tool-call uptime is meaningless. Multi-worker mode multiplies the ambiguity.</p>
+        <p>Until we have one canonical answer to "what is uptime <em>of</em>", reporting it would mislead. Dropped until we have it figured out.</p>
+      </div>
+    </details>
+
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4 open:pb-4">
+      <summary class="font-medium text-slate-100">Why <code>list[ComponentStatus]</code> instead of <code>dict[str, ComponentStatus]</code>?</summary>
+      <div class="mt-3 text-slate-300 space-y-2 text-sm">
+        <p>A dict-keyed-by-name generates <code>{additionalProperties: {$ref: ...}}</code> — a "container of arbitrary string keys." Self-documenting for humans, less so for agents and validators: the schema doesn't tell them what keys are <em>possible</em>.</p>
+        <p>A list of typed objects with an explicit <code>name</code> field gives the schema an array of definite shape. Easier to iterate, easier to validate, easier to extend with order or grouping later.</p>
+      </div>
+    </details>
+
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4 open:pb-4">
+      <summary class="font-medium text-slate-100">Why move <code>about</code> into <code>tools/</code> too?</summary>
+      <div class="mt-3 text-slate-300 space-y-2 text-sm">
+        <p>If <code>tools/</code> exists, having one tool live elsewhere creates a "why is this one different?" question every future reader has to answer. Consistency removes the cognitive lump for free.</p>
+        <p>It also makes <code>server.py</code> contain exactly what it's named for — the server instance + transport entry point — and nothing else.</p>
+      </div>
+    </details>
+
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4 open:pb-4">
+      <summary class="font-medium text-slate-100">Why side-effect imports and the bottom-of-file import in <code>server.py</code>?</summary>
+      <div class="mt-3 text-slate-300 space-y-2 text-sm">
+        <p>Each tool module decorates its function with <code>@mcp.tool()</code> at module-load time. That's how FastMCP discovers tools — by being decorated, not by a registry call. So importing the module is the <em>registration</em>.</p>
+        <p>The catch: tool modules <code>from ...server import mcp</code>. If <code>server.py</code> tried to <code>from .tools import ...</code> at the top, Python would re-enter <code>server.py</code> before <code>mcp</code> was defined — circular ImportError.</p>
+        <p>Putting the import at the bottom (after <code>mcp</code> is defined) breaks the cycle. The <code>noqa: E402, F401</code> tells ruff "this is intentional, not a violation." The alternative — extracting <code>mcp</code> into its own <code>instance.py</code> module — works too, and might be worth doing if the bottom-of-file pattern feels weird later.</p>
+      </div>
+    </details>
+
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4 open:pb-4">
+      <summary class="font-medium text-slate-100">Why add <code>pydantic</code> as a direct dependency?</summary>
+      <div class="mt-3 text-slate-300 space-y-2 text-sm">
+        <p>Pydantic was already installed via <code>mcp[cli]</code>'s transitive requirements. But we now <em>use</em> Pydantic in our own code — it's a real direct dependency.</p>
+        <p>Pinning explicitly: (1) prevents a future MCP SDK update from silently downgrading or removing the dependency; (2) signals intent to future readers — "we depend on Pydantic on purpose, not by accident."</p>
+      </div>
+    </details>
+  </section>
+
+  <!-- Workflow notes -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">Workflow notes</h2>
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4 open:pb-4" open>
+      <summary class="font-medium text-slate-100">No <code>grill-with-docs</code> this chunk — and why that was right</summary>
+      <ul class="mt-3 list-disc list-inside text-slate-300 space-y-1 text-sm">
+        <li>The skills habit memo: skills fire at <em>high-leverage</em> moments, not every chunk. M0.5 is domain-shaping (what does the tool return?), not library-binding (which MCP feature do we adopt?).</li>
+        <li>FastMCP's "return any Pydantic model and you get a schema" path is well-trodden — no surprising API knob to validate.</li>
+        <li>The decisions that needed airing (response shape, list vs dict, code location) were product/structure calls, not "does this API actually exist?" calls.</li>
+        <li>Risk avoided: reflexive grill-with-docs on every chunk would dilute the habit. Saving it for moments where docs <em>change the answer</em> keeps the signal strong.</li>
+      </ul>
+    </details>
+  </section>
+
+  <!-- Go deeper -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold text-slate-100">Go deeper (prompts to pull on)</h2>
+    <details class="bg-slate-900 border border-slate-800 rounded-lg p-4">
+      <summary class="font-medium text-slate-100">Six prompts that would each open a new branch of the design tree</summary>
+      <ol class="mt-3 list-decimal list-inside text-slate-300 space-y-1 text-sm">
+        <li>"What happens on the wire if a tool returns something that doesn't validate against its declared schema? Show the failure mode."</li>
+        <li>"Walk through Pydantic's JSON Schema generation for a model with discriminated unions (e.g., <code>Annotated[Union[A, B], Field(discriminator='type')]</code>) — how does it land on the wire?"</li>
+        <li>"What's the difference between <code>structuredContent</code> and <code>content[text]</code> for agent reasoning vs UI rendering? When does an mcp-ui surface look at one vs the other?"</li>
+        <li>"If we want richer error reporting (validation errors as structured data), how would we shape an error model and surface it from <code>isError: true</code> responses?"</li>
+        <li>"How would extracting <code>mcp</code> into <code>mcp/instance.py</code> change the import graph? Trade-off vs the bottom-of-file pattern we picked?"</li>
+        <li>"Once M0.6 lands Postgres, what does <code>health_check</code> grow into? Components list will include <code>db</code> with detail = which migration is applied. Sketch the shape."</li>
+      </ol>
+    </details>
+  </section>
+
+  <!-- Footer -->
+  <footer class="border-t border-slate-800 pt-6 text-sm text-slate-400 space-y-1">
+    <div>Chunk: <code>M0.5</code> · Shipped: 2026-05-31 · Commit: <code>f54bcd5</code></div>
+    <div>Roadmap: <a class="underline text-slate-300" href="../../roadmap.md">roadmap.md</a> · Code: <a class="underline text-slate-300" href="../../src/dooh_control_tower/mcp/tools/health.py">tools/health.py</a>, <a class="underline text-slate-300" href="../../src/dooh_control_tower/mcp/tools/__init__.py">tools/__init__.py</a>, <a class="underline text-slate-300" href="../../src/dooh_control_tower/mcp/server.py">server.py</a></div>
+    <div>Previous: <a class="underline text-slate-300" href="./m0-4b-stdio-vs-streamable-http.html">M0.4b — stdio vs streamable-http</a></div>
+  </footer>
+
+</div>
+</body>
+</html>
