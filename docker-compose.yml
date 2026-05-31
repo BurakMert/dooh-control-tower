@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: postgis/postgis:17-3.5
+    # postgis/postgis publishes amd64-only images. Pin the platform so
+    # Apple Silicon dev machines run it under Rosetta instead of failing
+    # on a missing arm64 manifest. Prod deploy can drop this pin.
+    platform: linux/amd64
+    container_name: dooh-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_HOST_PORT:-5433}:5432"
+    volumes:
+      - dooh_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  dooh_pgdata:
