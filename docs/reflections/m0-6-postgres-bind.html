@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>M0.6 — Binding to Postgres + PostGIS</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', themeVariables: { fontSize: '14px' } });
+</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  details > summary { cursor: pointer; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "▸ "; color: #64748b; }
+  details[open] > summary::before { content: "▾ "; }
+  pre { font-size: 12px; line-height: 1.4; }
+  .mermaid { background: white; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+<div class="max-w-4xl mx-auto px-6 py-10 space-y-10">
+
+  <header class="space-y-2">
+    <p class="text-sm text-slate-500">Reflection · M0.6 (a + b combined)</p>
+    <h1 class="text-3xl font-semibold">Binding to Postgres + PostGIS</h1>
+    <p class="text-slate-600">A real database, behind a real pool, reachable from the agent. The lifespan ritual we wrote for FastMCP in M0.4b now manages a second resource — and the structured tool we shaped in M0.5 just gained a meaningful payload to carry.</p>
+  </header>
+
+  <!-- ────────────────────────────────────────  BIG PICTURE  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Big picture</h2>
+    <p>Two chunks landed under M0.6. M0.6a stood up the database. M0.6b connected the app to it.</p>
+    <div class="mermaid bg-white border rounded p-4">
+flowchart LR
+  A["Claude Desktop<br/>(stdio)"] --> B["mcp.run()<br/>FastMCP loop"]
+  C["Probe / curl<br/>(HTTP)"] --> D["uvicorn worker<br/>FastAPI app"]
+  B --> E["health_check tool"]
+  D --> E
+  E --> F["async_session_factory"]
+  F --> G["AsyncEngine<br/>(pool: 5 + 5)"]
+  G --> H["psycopg3 async<br/>(libpq under the hood)"]
+  H --> I["docker postgres+postgis<br/>:5433"]
+  I -. PostGIS_full_version .-> H
+  style E fill:#fef3c7
+  style G fill:#dbeafe
+  style I fill:#dcfce7
+    </div>
+    <p class="text-sm text-slate-600">The agent calls one tool. The tool checks two components (mcp, postgres). The postgres check is a real SQL round-trip — through a pool the lifespan owns, through a driver one decision away from being something else.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  WHAT WE DID  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">What we did</h2>
+    <div class="grid md:grid-cols-2 gap-4">
+      <div class="border rounded p-4 bg-white">
+        <p class="text-xs uppercase tracking-wide text-slate-500">M0.6a — Database</p>
+        <ul class="list-disc list-inside text-sm space-y-1 mt-2">
+          <li><code>docker-compose.yml</code> with <code>postgis/postgis:17-3.5</code></li>
+          <li><code>platform: linux/amd64</code> pin (Apple Silicon Rosetta)</li>
+          <li><code>pg_isready</code> healthcheck, named volume <code>dooh_pgdata</code></li>
+          <li><code>.env</code> (gitignored) + <code>.env.example</code> (committed)</li>
+          <li>Verified: PostgreSQL 17.5, PostGIS 3.5 with GEOS/PROJ/STATS</li>
+        </ul>
+      </div>
+      <div class="border rounded p-4 bg-white">
+        <p class="text-xs uppercase tracking-wide text-slate-500">M0.6b — App binding</p>
+        <ul class="list-disc list-inside text-sm space-y-1 mt-2">
+          <li><code>uv add sqlalchemy[asyncio] psycopg[binary,pool]</code></li>
+          <li>New <code>db.py</code>: engine + session factory + lifespan</li>
+          <li><code>app.py</code>: <code>AsyncExitStack</code> composes MCP + db lifespans</li>
+          <li><code>server.py</code>: FastMCP <code>lifespan=</code> kwarg for stdio</li>
+          <li><code>health_check</code> now async, runs <code>SELECT PostGIS_full_version()</code></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────────────────────────────────────────  HOW IT WORKS  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">How it works — the payload the agent sees</h2>
+    <p>The wire shape didn't change (still the M0.5 <code>HealthCheck</code> Pydantic model). What changed is the data flowing through it. Compare:</p>
+    <div class="grid md:grid-cols-2 gap-4">
+      <div>
+        <p class="text-xs uppercase tracking-wide text-slate-500 mb-1">M0.5 — structuredContent</p>
+<pre class="bg-slate-900 text-slate-100 rounded p-3 overflow-x-auto">{
+  "status": "ok",
+  "timestamp": "2026-05-31T…",
+  "components": [
+    {
+      "name": "mcp",
+      "status": "ok",
+      "detail": null
+    }
+  ]
+}</pre>
+        <p class="text-xs text-slate-500 mt-1">Shape proved. Payload thin — only the tool's <em>self</em>-report.</p>
+      </div>
+      <div>
+        <p class="text-xs uppercase tracking-wide text-slate-500 mb-1">M0.6b — structuredContent</p>
+<pre class="bg-slate-900 text-slate-100 rounded p-3 overflow-x-auto">{
+  "status": "ok",
+  "timestamp": "2026-05-31T20:02:58.338470Z",
+  "components": [
+    { "name": "mcp", "status": "ok", "detail": null },
+    {
+      "name": "postgres",
+      "status": "ok",
+      "detail": "POSTGIS=\"3.5.2 dea6d0a\" [EXTENSION]
+                 PGSQL=\"170\" GEOS=\"3.9.0…\"
+                 PROJ=\"7.2.1…\" …"
+    }
+  ]
+}</pre>
+        <p class="text-xs text-slate-500 mt-1">Real round-trip. The string proves connectivity <em>and</em> the extension actually loaded.</p>
+      </div>
+    </div>
+    <p class="text-sm">A plain <code>SELECT 1</code> would have passed even if PostGIS wasn't installed. <code>PostGIS_full_version()</code> tests the new thing M0.6 introduced.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  WHY THIS WAY  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Why this way</h2>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">1. Why SQLAlchemy 2.0 async instead of raw SQL</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>The grill opened with the question that determines the driver: <em>how does the app talk to Postgres?</em></p>
+        <p>My recommendation was raw SQL — PostGIS-heavy workloads read more clearly as raw queries, the schema is small, and the showcase narrative ("here's the SQL the agent runs") is cleaner. You picked SQLAlchemy 2.0 async instead. Reasons that point that way: Alembic is the gold standard for migrations, SQLA 2.0 Declarative + <code>Mapped[T]</code> gives typed models that pair well with Pydantic, and the SQLA ecosystem is what employers expect.</p>
+        <p>Knock-on: chose <code>psycopg3</code> over <code>asyncpg</code> (next collapse). PostGIS access will need GeoAlchemy2 when we add geometry columns in M1.1 — flagged as a small future research moment.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">2. Why psycopg3 over asyncpg</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>The deciding sentence from the SQLAlchemy 2.0 changelog:</p>
+        <blockquote class="border-l-4 border-slate-300 pl-3 italic text-slate-600">
+          The same psycopg database URL works with both <code>create_engine()</code> and <code>create_async_engine()</code>, with the corresponding sync or asyncio version of the dialect selected automatically.
+        </blockquote>
+        <p>Translation: one driver covers both the FastAPI async path <em>and</em> Alembic (which is sync). With <code>asyncpg</code> we'd need <code>psycopg2</code> or <code>psycopg3</code> installed alongside, just to make Alembic work.</p>
+        <p>The perf gap (asyncpg historically ~10-30% faster) is invisible at our workload — analytical queries and a synthetic PoP simulator that won't push thousands of QPS. We're paying ergonomic cost for raw throughput we don't need.</p>
+        <p>Counter-case: if M3 ad-serving load profile turns out to need every microsecond, we swap drivers by changing the URL prefix from <code>postgresql+psycopg://</code> to <code>postgresql+asyncpg://</code>. The rest of the app code doesn't move.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">3. Why a module-level engine + lifespan only owns disposal</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>SQLA's <code>AsyncEngine</code> is cheap to create — the pool is lazy. No connections open until first checkout. So creating it at module import time (rather than inside the lifespan) costs nothing and keeps the wiring simple.</p>
+        <p>The lifespan only owns <em>shutdown</em>: <code>await engine.dispose()</code>. That call is idempotent — safe to call from both the FastMCP stdio lifespan and the FastAPI HTTP lifespan even if a future refactor makes both fire in the same process.</p>
+        <p>Trade-off accepted: if you wanted per-request engine swapping for tests, you'd want the engine inside the lifespan instead. We're not there yet — when we get to integration tests in a later milestone, we'll likely use <code>pytest-asyncio</code> fixtures that create their own engine.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">4. Why AsyncExitStack instead of nested async with</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>Naive way (works for two resources, scales badly):</p>
+<pre class="bg-slate-100 rounded p-2">async with mcp.session_manager.run():
+    async with db_lifespan():
+        yield</pre>
+        <p>Stack-based way (what we shipped):</p>
+<pre class="bg-slate-100 rounded p-2">async with contextlib.AsyncExitStack() as stack:
+    await stack.enter_async_context(mcp.session_manager.run())
+    await stack.enter_async_context(db_lifespan())
+    yield</pre>
+        <p>Why bother now, with only two resources? Because we know what's coming: Redis for caching (Phase 2?), an HTTP client pool for the lite ad-server's downstream calls, maybe a background scheduler for the pacing rebalancer (M6.1). Nested <code>async with</code> walks off the right margin. <code>AsyncExitStack</code> stays flat.</p>
+        <p class="text-slate-600 italic">Per memory <code>feedback_yagni_calibration.md</code>: when the roadmap names the future and the cost is low, prefer pre-structuring. This is exactly that shape.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">5. Why pool_size=5, max_overflow=5</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>Single uvicorn worker. Agent-paced traffic — a handful of tool calls per minute, each with one DB round-trip. Five baseline connections is comfortably above that.</p>
+        <p><code>max_overflow=5</code> gives 10 max in-flight without raising errors during bursts. Postgres default <code>max_connections</code> is 100, so we're using a tenth of the budget — fine for dev, fine for the synthetic PoP simulator in M3 if it stays in a separate process.</p>
+        <p>Revisit at M3 when we add the ad-serving path (<code>/ad</code> endpoint) — that's the first time we'll have concurrent request load against the DB. Numbers to watch: pool wait time, P99 query latency, postgres <code>pg_stat_activity</code>.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">6. Why pool_pre_ping=True</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>Cheap <code>SELECT 1</code> on every connection checkout. The cost is one extra round-trip per request (microseconds on localhost, sub-millisecond on a VPC). The benefit: stale connections — killed by a Postgres restart, a Docker pause, an idle timeout — get detected and replaced before they hand a broken connection to your code.</p>
+        <p>In a dev loop where you <code>docker compose restart postgres</code> mid-session, this is the difference between "next request works" and "next 5 requests fail with weird connection errors before the pool recovers."</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">7. Why postgis/postgis:17-3.5 instead of postgres:17 + manual extension</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>Three reasons:</p>
+        <ul class="list-disc list-inside space-y-1">
+          <li>The image's <code>docker-entrypoint-initdb.d</code> pre-creates the extension on first boot — no migration step needed to bootstrap PostGIS.</li>
+          <li>The build is the canonical PostGIS team build — GEOS, PROJ, GDAL, and pgRouting versions are known-compatible. Hand-rolling has a footgun: <code>apt-get install postgis</code> in a postgres image can pull a GEOS that mismatches the binary expectations.</li>
+          <li>Tag versioning (<code>17-3.5</code>) is two-axis: Postgres major + PostGIS minor. Pinning both axes is exactly what we want for reproducible dev.</li>
+        </ul>
+        <p>Cost: amd64 only. Apple Silicon needs <code>platform: linux/amd64</code> and runs under Rosetta. Acceptable for dev; prod can drop the pin on a Linux/amd64 host.</p>
+      </div>
+    </details>
+
+  </section>
+
+  <!-- ────────────────────────────────────────  WORKFLOW NOTES  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Workflow notes</h2>
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">grill-with-docs caught the sync+async one-driver win</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>Without checking docs, I would have defaulted to "asyncpg is faster, pick it." That's true on raw benchmarks but misses the operational story: Alembic is sync, your migration tooling needs a sync driver, and shipping <em>two</em> Postgres drivers is a footgun.</p>
+        <p>Context7's pull of the SQLA 2.0 changelog surfaced the exact sentence ("the same psycopg URL works with both…") that flipped the recommendation. Six minutes of doc query vs. several days of "why does Alembic need its own driver" confusion down the road.</p>
+        <p>Counted against the <code>feedback_ai_workflow_habit.md</code> ledger as a clean grill-with-docs payoff. Commit footer: <code>Skills: grill-with-docs, handoff</code>.</p>
+      </div>
+    </details>
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">Why one combined reflection for M0.6a + M0.6b</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>M0.6a alone was pure plumbing — a docker-compose file. Per <code>feedback_visual_reflections.md</code>, pure plumbing skips the reflection.</p>
+        <p>But the M0.6a <em>decisions</em> (image choice, Apple Silicon Rosetta pin, env file split) matter enough to capture once. Bundling them into the M0.6b reflection — the chunk that actually introduces concepts (async driver story, pool, lifespan composition) — keeps the M0 documentation set coherent.</p>
+      </div>
+    </details>
+  </section>
+
+  <!-- ────────────────────────────────────────  GO DEEPER  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Go deeper</h2>
+    <p class="text-sm text-slate-600">Prompts to use in a future session when curiosity strikes — each is one pomodoro's worth of pull.</p>
+    <ul class="space-y-2 text-sm">
+      <li class="border-l-4 border-amber-300 pl-3">"Walk through how SQLA's <code>AsyncAdaptedQueuePool</code> differs from <code>asyncpg.Pool</code> and <code>psycopg_pool.AsyncConnectionPool</code> — when would you bypass SQLA's pool and use the driver's pool directly?"</li>
+      <li class="border-l-4 border-amber-300 pl-3">"What's <code>expire_on_commit=False</code> actually doing, and why is it the right default for FastAPI?"</li>
+      <li class="border-l-4 border-amber-300 pl-3">"Show me what happens to in-flight requests when <code>engine.dispose()</code> fires during shutdown — does SQLA wait, kill, or pass through?"</li>
+      <li class="border-l-4 border-amber-300 pl-3">"Walk through psycopg3's pipeline mode — when does it pay off, and how would I wire it into a SQLA <code>AsyncSession</code>?"</li>
+      <li class="border-l-4 border-amber-300 pl-3">"Compare Alembic vs Atlas vs raw SQL files + a tiny runner for migrations — what would each look like for the M1.1 <code>screen</code> table with a geometry column?"</li>
+      <li class="border-l-4 border-amber-300 pl-3">"Why does PostGIS expose <code>PostGIS_full_version()</code> as a function and not a view? What does the version string tell me about the build I'm running?"</li>
+    </ul>
+  </section>
+
+  <footer class="text-xs text-slate-500 pt-6 border-t">
+    Chunk M0.6 (a + b) · Shipped 2026-05-31 · Skills: grill-with-docs, handoff · Next: <a href="../../roadmap.md" class="underline">M1.1 — first real schema</a>
+  </footer>
+
+</div>
+</body>
+</html>

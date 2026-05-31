@@ -25,9 +25,9 @@ Goal: shippable demo of all three hero journeys (planning, diagnosis, reporting)
 - [x] **M0.4** — Register MCP server in Claude Desktop config; verify the tool appears and calls. *Shipped 2026-05-30. Verified via Connectors panel + live `about` call.*
 - [x] **M0.4b** — Also expose the MCP server over `streamable-http`; observe SSE on the wire; reflection comparing stdio vs streamable-http side-by-side. *Shipped 2026-05-30. Reflection: [`docs/reflections/m0-4b-stdio-vs-streamable-http.html`](docs/reflections/m0-4b-stdio-vs-streamable-http.html).*
 - [x] **M0.5** — First domain-shaped tool: `health_check` returning a structured response. *Shipped 2026-05-31. Reflection: [`docs/reflections/m0-5-structured-output.html`](docs/reflections/m0-5-structured-output.html).*
-- [ ] **M0.6** — Docker compose with Postgres + PostGIS; verify connection from FastAPI. *Split into M0.6a + M0.6b.*
-  - [x] **M0.6a** — `docker-compose.yml` with `postgis/postgis:17-3.5` (Apple Silicon: `platform: linux/amd64` pin); verified via `psql` (PostgreSQL 17.5, PostGIS 3.5 with GEOS/PROJ/STATS). *Shipped 2026-05-31. Reflection lands with M0.6b.*
-  - [ ] **M0.6b** — Async driver (asyncpg vs psycopg3 decision via `grill-with-docs`); FastAPI lifespan extended with connection pool; verify a SQL round-trip from a tool. Reflection: dev-compose vs prod, pool sizing, lifespan ritual, transport-vs-driver concurrency story.
+- [x] **M0.6** — Docker compose with Postgres + PostGIS; verify connection from FastAPI. *Shipped 2026-05-31. Reflection: [`docs/reflections/m0-6-postgres-bind.html`](docs/reflections/m0-6-postgres-bind.html).*
+  - [x] **M0.6a** — `docker-compose.yml` with `postgis/postgis:17-3.5` (Apple Silicon: `platform: linux/amd64` pin); verified via `psql` (PostgreSQL 17.5, PostGIS 3.5 with GEOS/PROJ/STATS). *Shipped 2026-05-31.*
+  - [x] **M0.6b** — SQLAlchemy 2.0 async + psycopg3 (chosen via `grill-with-docs` over asyncpg for the sync+async one-driver win). `db.py` engine + session factory + lifespan; `app.py` composes lifespans via `AsyncExitStack`; `health_check` extended with a `postgres` component running `SELECT PostGIS_full_version()`. *Shipped 2026-05-31.*
 
 ### M1 — Domain model & synthetic network (~5 chunks)
 - [ ] M1.1 — Schema: `screen` table with PostGIS geometry column.
@@ -108,4 +108,6 @@ Milestone shape (to be detailed once Phase 1 M7.2 lessons-learned is written —
 ---
 
 ## Today's start
-**Next chunk: M0.6b** — Connect FastAPI to the now-running Postgres+PostGIS. Open with `grill-with-docs` for the async driver decision (asyncpg vs psycopg3 — both viable, different ergonomics, real trade-off). Then extend the FastAPI lifespan to manage a connection pool, add a small SQL probe (a tool or a /health subfield that round-trips to Postgres), and write the M0.6 reflection covering both M0.6a and M0.6b end-to-end (dev-compose vs prod shape, pool sizing, transport-vs-driver concurrency story, lifespan ritual extended to a real resource).
+**Next chunk: M1.1** — First real domain table: `screen` with a PostGIS geometry column. Decisions to make at the top of the chunk: SQLA Declarative `Mapped[T]` model shape, GeoAlchemy2 vs raw `Geometry` type, SRID choice (4326 for lon/lat — standard for ad serving), how to bootstrap migrations (Alembic init + first migration, or wait one chunk and use `create_all` for the spike?). Reflection-eligible — first time we introduce both an ORM model and a spatial type.
+
+**Reminder:** docker compose stack is left running. If it's not, `docker compose up -d` from the repo root.
