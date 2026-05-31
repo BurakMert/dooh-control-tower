@@ -9,6 +9,7 @@ requires-python = ">=3.11"
 dependencies = [
     "fastapi[standard]>=0.136.3",
     "mcp[cli]>=1.27.2",
+    "pydantic>=2.13.4",
 ]
 
 [project.scripts]

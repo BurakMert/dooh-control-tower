@@ -7,17 +7,10 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP(name="DOOH Control Tower", stateless_http=True)
 mcp.settings.streamable_http_path = "/"
 
-
-@mcp.tool()
-def about() -> str:
-    """Describe the DOOH Control Tower MCP server: purpose, thesis, and current build phase."""
-    return (
-        "DOOH Control Tower — a chat-driven operational tool for Digital Out-of-Home "
-        "advertising. Thesis: the agent decides WHAT to show, the app decides HOW to "
-        "render. Phase 1 build: MCP + Claude Desktop + mcp-ui. The DOOH adtech "
-        "(adserver, campaign manager, reporting) is the canvas; the chat-driven "
-        "operational tool is the product."
-    )
+# Side-effect import: each module under .tools registers its tools via
+# @mcp.tool() decorators. Must be at bottom — tools modules import `mcp` from
+# this file, so a top-of-file import would be circular.
+from dooh_control_tower.mcp import tools  # noqa: E402, F401
 
 
 def main() -> None:

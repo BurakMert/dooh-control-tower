@@ -29,3 +29,6 @@ call "tools/list" \
 
 call "tools/call about" \
   '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"about","arguments":{}}}'
+
+call "tools/call health_check" \
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"health_check","arguments":{}}}'
