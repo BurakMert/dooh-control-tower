@@ -29,3 +29,4 @@ Layered HTML reflection pages — what we built, how it works, decisions, prompt
 - [`m0-5-structured-output.html`](./docs/reflections/m0-5-structured-output.html) — typed Pydantic returns, auto-generated outputSchema, structuredContent on the wire (M0.5)
 - [`m0-6-postgres-bind.html`](./docs/reflections/m0-6-postgres-bind.html) — Postgres + PostGIS via Docker, SQLAlchemy 2.0 async + psycopg3, pooled lifespan, agent-visible round-trip (M0.6 a + b)
 - [`m1-1-first-spatial-table.html`](./docs/reflections/m1-1-first-spatial-table.html) — `screen` table with SQLA 2.0 `Mapped[T]`, GeoAlchemy2 PostGIS column, Alembic bootstrap, the autogenerate-vs-TIGER trap (M1.1)
+- [`m1-2-synthetic-network.html`](./docs/reflections/m1-2-synthetic-network.html) — 100 synthetic NYC screens, anchored clustering, deterministic `random.Random(seed=42)`, SQLA Core bulk + `ON CONFLICT DO NOTHING`, the WKT lon-first footgun (M1.2)

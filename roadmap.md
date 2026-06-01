@@ -31,7 +31,7 @@ Goal: shippable demo of all three hero journeys (planning, diagnosis, reporting)
 
 ### M1 — Domain model & synthetic network (~5 chunks)
 - [x] **M1.1** — Schema: `screen` table with PostGIS geometry column. SQLA 2.0 Declarative + `Mapped[T]`, GeoAlchemy2 `Geometry("POINT", srid=4326, spatial_index=True)`, Alembic bootstrapped with `include_object` filter (skips postgis/TIGER tables), `count_screens` MCP tool. *Shipped 2026-06-01. Reflection: [`docs/reflections/m1-1-first-spatial-table.html`](docs/reflections/m1-1-first-spatial-table.html).*
-- [ ] M1.2 — Synthetic network generator (100 NYC screens with realistic clustering).
+- [x] **M1.2** — Synthetic network generator. 100 screens, 12 hand-curated NYC anchors (Manhattan 60% / Brooklyn 25% / Queens 15%), seeded `random.Random(42)`, ~500m uniform jitter. CLI entrypoint `dooh-seed` (registered in pyproject). SQLA Core bulk insert via `pg_insert.on_conflict_do_nothing(external_id)` — idempotent. Verified: `count_screens` returns 100; market tally 53/28/19. *Shipped 2026-06-01. Reflection: [`docs/reflections/m1-2-synthetic-network.html`](docs/reflections/m1-2-synthetic-network.html).*
 - [ ] M1.3 — Schema: `campaign`, `creative`, `targeting` tables.
 - [ ] M1.4 — Schema: `pop_event` (daily partitions) + `pacing_bucket`.
 - [ ] M1.5 — H3 indexing job (precompute res-8 and res-9 cells per screen).
@@ -108,6 +108,6 @@ Milestone shape (to be detailed once Phase 1 M7.2 lessons-learned is written —
 ---
 
 ## Today's start
-**Next chunk: M1.2** — Synthetic NYC screen generator. ~100 screens with realistic Manhattan/Brooklyn clustering. Decisions at top: (1) seeding entry point — a CLI command (`uv run python -m dooh_control_tower.seed`) vs an MCP tool (`generate_synthetic_screens`) vs both; (2) randomness source — pure Python `random` with a fixed seed (reproducible) vs Faker for names/types; (3) clustering algorithm — explicit per-neighborhood gaussian, or pick from a fixed set of lat/lon "anchor" points + jitter; (4) bulk insert path — `session.add_all` vs `session.execute(insert(Screen), [...])` vs psycopg3 COPY. The reflection-go-deeper #5 from M1.1 is the live question for #4. Verify with `count_screens` returning 100 + a sample query for one market.
+**Next chunk: M1.3** — `campaign`, `creative`, `targeting` schemas + their first migration. Decisions to land at the top: (1) one migration or three — bundle all three new tables into one `alembic revision` or stage them; (2) `campaign` ↔ `creative` cardinality — 1:N (campaign has many creatives) or N:N (creatives shared across campaigns); (3) `targeting` as a separate table or as JSONB columns on `campaign` (FK rows compose better with PostGIS in M3.3; JSONB is more flexible but slower to query); (4) seed strategy — `seed_campaigns()` sub-function in the existing `seed.py`, deterministic from the same SEED=42, ~10 synthetic campaigns referencing the screens we already have. Reflection-eligible (new ORM patterns: FKs, multi-table relationships, the JSONB-vs-table tension).
 
 **Reminder:** docker compose stack is left running. If it's not, `docker compose up -d` from the repo root.

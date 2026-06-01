@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>M1.2 — Synthetic NYC network</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', themeVariables: { fontSize: '14px' } });
+</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  details > summary { cursor: pointer; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "▸ "; color: #64748b; }
+  details[open] > summary::before { content: "▾ "; }
+  pre { font-size: 12px; line-height: 1.4; }
+  .mermaid { background: white; }
+  table.compact td, table.compact th { padding: 0.25rem 0.75rem; border-bottom: 1px solid #e2e8f0; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+<div class="max-w-4xl mx-auto px-6 py-10 space-y-10">
+
+  <header class="space-y-2">
+    <p class="text-sm text-slate-500">Reflection · M1.2</p>
+    <h1 class="text-3xl font-semibold">Filling the network — 100 synthetic NYC screens</h1>
+    <p class="text-slate-600">The empty table got a population. Hand-curated anchors, deterministic randomness, idempotent insert. The agent can now answer <em>"how many screens are there?"</em> with a real number, and from M1.3 onward the rest of the domain has somewhere to point.</p>
+  </header>
+
+  <!-- ────────────────────────────────────────  BIG PICTURE  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Big picture</h2>
+    <div class="mermaid bg-white border rounded p-4">
+flowchart LR
+  A["random.Random(seed=42)"] --> B["generate_screens()"]
+  C["12 hand-curated<br/>NYC anchors"] --> B
+  D["weighted market shares<br/>(60/25/15)"] --> B
+  B --> E["100 rows<br/>(list[dict])"]
+  E --> F["pg_insert(Screen)<br/>.on_conflict_do_nothing"]
+  F --> G["psycopg3 async<br/>(executemany)"]
+  G --> H["public.screen<br/>(100 rows)"]
+  I["count_screens<br/>MCP tool"] -.-> H
+  style B fill:#fef3c7
+  style F fill:#dbeafe
+  style H fill:#dcfce7
+    </div>
+    <p class="text-sm text-slate-600">Pure-function generation (<code>generate_screens</code>) is separable from the async upsert. The pure part is unit-testable; the async part is the boundary. M1.3/M1.4 will reuse the same shape — pure generator, async upsert.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  RESULT  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">What landed</h2>
+    <div class="grid md:grid-cols-2 gap-4">
+      <div class="bg-white border rounded p-4">
+        <p class="text-xs uppercase tracking-wide text-slate-500">Market distribution (N=100, seed=42)</p>
+        <table class="compact text-sm mt-2 w-full">
+          <thead class="text-left text-slate-500"><tr><th>Market</th><th>Target</th><th>Got</th></tr></thead>
+          <tbody>
+            <tr><td>Manhattan</td><td>60%</td><td>53</td></tr>
+            <tr><td>Brooklyn</td><td>25%</td><td>28</td></tr>
+            <tr><td>Queens</td><td>15%</td><td>19</td></tr>
+          </tbody>
+        </table>
+        <p class="text-xs text-slate-500 mt-2">Off-target by ~5 each — small-sample variance at N=100. Same numbers every run because the seed is fixed.</p>
+      </div>
+      <div class="bg-white border rounded p-4">
+        <p class="text-xs uppercase tracking-wide text-slate-500">Sample rows</p>
+<pre class="bg-slate-900 text-slate-100 rounded p-3 overflow-x-auto text-xs mt-2">screen_001  Cadman Plaza Screen #001    Brooklyn
+            billboard          POINT(-74.001 40.703)
+screen_002  Cadman Plaza Screen #002    Brooklyn
+            street_furniture   POINT(-73.992 40.701)
+screen_003  Penn Station Screen #003    Manhattan
+            street_furniture   POINT(-73.996 40.751)</pre>
+        <p class="text-xs text-slate-500 mt-2">WKT POINT(lon lat) — longitude first. Famous PostGIS footgun (more below).</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────────────────────────────────────────  HOW IT WORKS  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">How it works</h2>
+
+    <p>The anchors carry market and act as the geographic centroids:</p>
+<pre class="bg-slate-900 text-slate-100 rounded p-3 overflow-x-auto">ANCHORS = (
+    Anchor("Manhattan", "Times Square",     -73.9855, 40.7580),
+    Anchor("Manhattan", "Penn Station",     -73.9935, 40.7506),
+    Anchor("Manhattan", "Grand Central",    -73.9772, 40.7527),
+    # … 9 more …
+    Anchor("Queens",    "Flushing",         -73.8326, 40.7596),
+)</pre>
+
+    <p>The trick is balancing the anchor weights so per-market totals converge to the desired share:</p>
+<pre class="bg-slate-900 text-slate-100 rounded p-3 overflow-x-auto">market_anchor_counts = {m: sum(1 for a in ANCHORS if a.market == m)
+                        for m in MARKET_SHARE}
+anchor_weights = [MARKET_SHARE[a.market] / market_anchor_counts[a.market]
+                  for a in ANCHORS]
+# Manhattan (7 anchors, 60% share) → each weight = 0.60 / 7 ≈ 0.0857
+# Brooklyn  (3 anchors, 25% share) → each weight = 0.25 / 3 ≈ 0.0833
+# Queens    (2 anchors, 15% share) → each weight = 0.15 / 2 = 0.0750</pre>
+    <p class="text-sm text-slate-600">Then for each screen: pick an anchor by weight, jitter ±0.005° (~500m), pick a screen_type and resolution by weight. Pure-function, deterministic, no side effects.</p>
+
+    <p>Insertion is one batched <code>executemany</code>:</p>
+<pre class="bg-slate-900 text-slate-100 rounded p-3 overflow-x-auto">stmt = pg_insert(Screen).on_conflict_do_nothing(
+    index_elements=["external_id"]
+)
+await session.execute(stmt, rows)
+await session.commit()</pre>
+    <p class="text-sm text-slate-600">Idempotent for free: rerun the script, the conflict on <code>external_id</code> drops duplicates silently. Want a clean regenerate? <code>TRUNCATE screen</code> first.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  WHY THIS WAY  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Why this way</h2>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">1. CLI as a stand-in for the production CSV importer</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>The agent doesn't <em>generate</em> screens — in a real DOOH network, screens exist physically and arrive via a feed from the network operator (CSV, JSON, vendor API). The right shape for that work is a CLI/job, not a chat tool.</p>
+        <p>Modeling the seed as <code>uv run dooh-seed</code> rather than an MCP tool keeps the demo honest about its analogue. The reflection can say: "in production this becomes a CSV importer pointed at the network's feed; the shape stays the same."</p>
+        <p>Bonus: M1.3 (campaigns), M1.4 (pop_event), and M1.5 (H3 cells) will all need seed paths. One CLI structure (<code>seed.py</code> with sub-functions per table) compounds; five MCP tools doing dev-loop work would be five wrong shapes.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">2. Why hand-curated anchors over gaussian clustering</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>Three plausible algorithms; only one reads cleanly:</p>
+        <ul class="list-disc list-inside space-y-1">
+          <li><strong>Pure uniform</strong> over a bounding box — looks like random snow on a map, not a real network.</li>
+          <li><strong>Gaussian clustering</strong> — pick K centroids, sample with sigma. Mathematically clean, hard to reason about (<em>"is sigma=0.003 a city block or a borough?"</em>).</li>
+          <li><strong>Anchors + uniform jitter</strong> (chosen) — hand-curated lat/lon for 12 known places, ±0.005° (~500m) uniform jitter. The jitter has a city-meaningful bound; the anchors carry semantics (Times Square ≠ Wall Street).</li>
+        </ul>
+        <p>The anchors also drive <code>market</code> and seed plausible <code>name</code>s ("Times Square Screen #003"). One declarative tuple → three columns' worth of plausibility.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">3. Why fixed seed (and why <code>random.Random(seed)</code> not <code>random.seed()</code>)</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>Reproducibility is the killer feature for fixtures. Same seed → same 100 screens. Tests in M3 can hard-code expected external_ids and not flake.</p>
+        <p><code>random.Random(42)</code> creates a *private* RNG. <code>random.seed(42)</code> mutates the global RNG, which is shared with anything else in the process that calls <code>random</code>. The private form is contained — no spooky action at a distance if the test harness or a future module also touches randomness.</p>
+        <p>This is one of those "best-practice the codebase will outgrow if I don't write it this way now" choices. Cheap insurance.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">4. The WKT POINT(lon lat) footgun</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>Well-Known Text (WKT) uses <em>longitude first</em>. So a screen near Times Square is <code>POINT(-73.9855 40.7580)</code>, not <code>POINT(40.7580 -73.9855)</code>.</p>
+        <p>This is the opposite of how every other format orders coordinates:</p>
+        <table class="compact text-xs mt-2 w-full">
+          <thead><tr><th>Format</th><th>Order</th><th>Times Square</th></tr></thead>
+          <tbody>
+            <tr><td>WKT (PostGIS)</td><td>lon lat</td><td><code>POINT(-73.9855 40.7580)</code></td></tr>
+            <tr><td>GeoJSON</td><td>lon lat</td><td><code>[-73.9855, 40.7580]</code></td></tr>
+            <tr><td>Google Maps / iOS</td><td>lat,lon</td><td><code>40.7580,-73.9855</code></td></tr>
+            <tr><td>JS Mapbox / Leaflet</td><td>lat,lng</td><td><code>{lat:40.7580, lng:-73.9855}</code></td></tr>
+          </tbody>
+        </table>
+        <p>The dataclass field naming is the defense in depth — <code>Anchor(lon=..., lat=...)</code> means you can't mix them up positionally. The WKT format string is the one place where order matters and there's no compiler help. Visible scrutiny at the format boundary, plus comments calling out the trap.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">5. Why SQLA Core bulk over <code>session.add_all</code> and over psycopg3 COPY</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>At N=100, the three are subsecond. Performance isn't the differentiator:</p>
+        <table class="compact text-xs w-full mt-2">
+          <thead><tr><th>Path</th><th>Approx ms @ N=100</th><th>Right when</th></tr></thead>
+          <tbody>
+            <tr><td><code>session.add_all</code></td><td>~50</td><td>You want the ORM identity map / cascades / event hooks</td></tr>
+            <tr><td><code>session.execute(insert, [...])</code></td><td>~20</td><td><strong>One-shot scripts, batches up to ~10k</strong></td></tr>
+            <tr><td>psycopg3 COPY FROM STDIN</td><td>~3</td><td>10k–1M+ rows in a hot loop</td></tr>
+          </tbody>
+        </table>
+        <p>Bulk insert wins on readability for a one-shot script: no session lifecycle gymnastics, no identity map allocated for rows we won't mutate. The <code>pg_insert</code> variant also gives us <code>ON CONFLICT DO NOTHING</code> — idempotency in one line.</p>
+        <p>COPY waits for <strong>M3.5</strong> — the synthetic PoP simulator pushes 10k+ events/sec, and <em>that's</em> where COPY's wire-level efficiency actually pays off. The M1.1 go-deeper bookmark stays alive there.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">6. <code>ON CONFLICT DO NOTHING</code> vs full upsert vs truncate-and-rebuild</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>The seed needs an idempotency story. Three options:</p>
+        <ul class="list-disc list-inside space-y-1">
+          <li><strong>ON CONFLICT DO NOTHING (chosen)</strong> — rerun, existing rows untouched, new rows added if external_ids are new.</li>
+          <li><strong>ON CONFLICT DO UPDATE (upsert)</strong> — rerun overwrites existing rows. Useful if the generator changes (anchor moves, jitter changes) and you want the database to follow.</li>
+          <li><strong>TRUNCATE first, then INSERT</strong> — clean slate every run. Loses any FK-linked downstream data.</li>
+        </ul>
+        <p>Picked DO NOTHING because: (a) external_ids are stable and deterministic from the seed, (b) once campaigns/PoP events exist (M1.3+) they'll reference screens by id — overwriting screens would mean dangling FKs, (c) for the "I really want to regenerate" path, manual <code>TRUNCATE screen CASCADE</code> is the explicit choice the user should make.</p>
+      </div>
+    </details>
+
+  </section>
+
+  <!-- ────────────────────────────────────────  WORKFLOW NOTES  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Workflow notes</h2>
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">Bundling related decisions in the grill</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>The roadmap named four decisions for this chunk. I bundled randomness + clustering into one "synthetic data richness" tier question (Minimal / Anchored / Faked) instead of asking them separately.</p>
+        <p>Logic: they aren't independent — the right answer to "should we use Faker" depends on the same plausibility budget as "should we cluster around anchors." Asking them serially would have made the user think the same thought twice. Bundling kept the grill at 3 questions instead of 4 while preserving the choice structure.</p>
+        <p>Note for future chunks: when two decisions share an underlying axis, present them as tiers along that axis. When they're orthogonal, keep them separate.</p>
+      </div>
+    </details>
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">The M1.1 bookmark on COPY paid off here</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>M1.1's go-deeper #5 was "<em>psycopg3 COPY vs SQLA bulk insert</em>" — bookmarked as a future deep dive. M1.2 made the decision concrete: SQLA bulk now, COPY later.</p>
+        <p>The bookmark didn't get pulled today (no reason to learn COPY here), but it stayed live and informed the M3.5 plan. Reflection bookmarks are themselves a kind of memory — they keep the workflow honest about what's been deferred vs forgotten.</p>
+      </div>
+    </details>
+  </section>
+
+  <!-- ────────────────────────────────────────  GO DEEPER  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Go deeper</h2>
+    <p class="text-sm text-slate-600">Five prompts, one pomodoro each.</p>
+    <ul class="space-y-2 text-sm">
+      <li class="border-l-4 border-amber-300 pl-3">"Walk through how PostGIS' GiST index actually accelerates an <code>ST_Contains(polygon, screen.geom)</code> query — what does the tree look like, what does <code>EXPLAIN</code> show?"</li>
+      <li class="border-l-4 border-amber-300 pl-3">"What's the expected variance of the market distribution at N=100 vs N=1000 with these weights? Should I increase N for the showcase, or is the small-sample wobble part of what makes it look real?"</li>
+      <li class="border-l-4 border-amber-300 pl-3">"Show me a pytest fixture pattern that uses <code>generate_screens(seed=…)</code> to build a deterministic test DB without needing the live Postgres."</li>
+      <li class="border-l-4 border-amber-300 pl-3">"Compare <code>WKTElement</code> vs <code>ST_GeomFromText</code> as the bind value — what does the generated SQL look like for each, and is there a measurable cost difference at the executemany boundary?"</li>
+      <li class="border-l-4 border-amber-300 pl-3">"What's the right structure for <code>seed.py</code> when M1.3 adds campaigns? One async <code>main</code> that calls <code>seed_screens()</code>, <code>seed_campaigns()</code> in order? CLI sub-commands? Argparse vs Click vs Typer for the dev-loop?"</li>
+    </ul>
+  </section>
+
+  <footer class="text-xs text-slate-500 pt-6 border-t">
+    Chunk M1.2 · Shipped 2026-06-01 · Skills: grill-with-docs, handoff · Next: <a href="../../roadmap.md" class="underline">M1.3 — campaign, creative, targeting schemas</a>
+  </footer>
+
+</div>
+</body>
+</html>
