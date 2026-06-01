@@ -30,7 +30,7 @@ Goal: shippable demo of all three hero journeys (planning, diagnosis, reporting)
   - [x] **M0.6b** — SQLAlchemy 2.0 async + psycopg3 (chosen via `grill-with-docs` over asyncpg for the sync+async one-driver win). `db.py` engine + session factory + lifespan; `app.py` composes lifespans via `AsyncExitStack`; `health_check` extended with a `postgres` component running `SELECT PostGIS_full_version()`. *Shipped 2026-05-31.*
 
 ### M1 — Domain model & synthetic network (~5 chunks)
-- [ ] M1.1 — Schema: `screen` table with PostGIS geometry column.
+- [x] **M1.1** — Schema: `screen` table with PostGIS geometry column. SQLA 2.0 Declarative + `Mapped[T]`, GeoAlchemy2 `Geometry("POINT", srid=4326, spatial_index=True)`, Alembic bootstrapped with `include_object` filter (skips postgis/TIGER tables), `count_screens` MCP tool. *Shipped 2026-06-01. Reflection: [`docs/reflections/m1-1-first-spatial-table.html`](docs/reflections/m1-1-first-spatial-table.html).*
 - [ ] M1.2 — Synthetic network generator (100 NYC screens with realistic clustering).
 - [ ] M1.3 — Schema: `campaign`, `creative`, `targeting` tables.
 - [ ] M1.4 — Schema: `pop_event` (daily partitions) + `pacing_bucket`.
@@ -108,6 +108,6 @@ Milestone shape (to be detailed once Phase 1 M7.2 lessons-learned is written —
 ---
 
 ## Today's start
-**Next chunk: M1.1** — First real domain table: `screen` with a PostGIS geometry column. Decisions to make at the top of the chunk: SQLA Declarative `Mapped[T]` model shape, GeoAlchemy2 vs raw `Geometry` type, SRID choice (4326 for lon/lat — standard for ad serving), how to bootstrap migrations (Alembic init + first migration, or wait one chunk and use `create_all` for the spike?). Reflection-eligible — first time we introduce both an ORM model and a spatial type.
+**Next chunk: M1.2** — Synthetic NYC screen generator. ~100 screens with realistic Manhattan/Brooklyn clustering. Decisions at top: (1) seeding entry point — a CLI command (`uv run python -m dooh_control_tower.seed`) vs an MCP tool (`generate_synthetic_screens`) vs both; (2) randomness source — pure Python `random` with a fixed seed (reproducible) vs Faker for names/types; (3) clustering algorithm — explicit per-neighborhood gaussian, or pick from a fixed set of lat/lon "anchor" points + jitter; (4) bulk insert path — `session.add_all` vs `session.execute(insert(Screen), [...])` vs psycopg3 COPY. The reflection-go-deeper #5 from M1.1 is the live question for #4. Verify with `count_screens` returning 100 + a sample query for one market.
 
 **Reminder:** docker compose stack is left running. If it's not, `docker compose up -d` from the repo root.

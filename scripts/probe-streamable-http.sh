@@ -32,3 +32,6 @@ call "tools/call about" \
 
 call "tools/call health_check" \
   '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"health_check","arguments":{}}}'
+
+call "tools/call count_screens" \
+  '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"count_screens","arguments":{}}}'
