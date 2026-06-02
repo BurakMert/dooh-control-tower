@@ -19,6 +19,8 @@ See [`roadmap.md`](./roadmap.md) for the milestone + chunk plan.
 - [`pre-prd-v1.md`](./pre-prd-v1.md) — initial pre-PRD snapshot
 - [`architecture-assessment.md`](./architecture-assessment.md) — Phase 2 target architecture
 - [`roadmap.md`](./roadmap.md) — milestone + chunk plan (source of truth)
+- [`CONTEXT.md`](./CONTEXT.md) — domain glossary (campaign, creative, PoP, pacing bucket, …)
+- [`docs/adr/`](./docs/adr/) — architectural decision records (durable, hard-to-reverse choices)
 
 ## Reflections
 
@@ -32,3 +34,4 @@ Layered HTML reflection pages — what we built, how it works, decisions, prompt
 - [`m1-2-synthetic-network.html`](./docs/reflections/m1-2-synthetic-network.html) — 100 synthetic NYC screens, anchored clustering, deterministic `random.Random(seed=42)`, SQLA Core bulk + `ON CONFLICT DO NOTHING`, the WKT lon-first footgun (M1.2)
 - [`m1-3-first-mcp-ui-surface.html`](./docs/reflections/m1-3-first-mcp-ui-surface.html) — first mcp-ui surface: Leaflet map of the screen network. MCP Apps SEP-1724 wiring, `@modelcontextprotocol/ext-apps` handshake, `text/html;profile=mcp-app` MIME, preferred-frame-size, the five-walls staircase. Verified in MCPJam; Claude Desktop render bug filed (M1.3)
 - [`m1-4-multi-table-schema.html`](./docs/reflections/m1-4-multi-table-schema.html) — `campaign` + `creative` + `targeting` tables: first FKs (`ON DELETE CASCADE`), first 1:1 (`UNIQUE` on `targeting.campaign_id` + `uselist=False`), first `MULTIPOLYGON` column, JSONB-vs-table tension explained, two-phase async seed pattern (M1.4)
+- [`m1-5-partitioned-pop-events.html`](./docs/reflections/m1-5-partitioned-pop-events.html) — first declarative `PARTITION BY RANGE (event_date)`, first natural-key composite PK, h3 denormalized for point-in-time correctness, first ADR + CONTEXT.md from a `grill-with-docs` session, partition pruning demonstrated via EXPLAIN (M1.5)

@@ -1,18 +1,20 @@
-"""Synthetic NYC DOOH dataset — screens, campaigns, creatives, targeting.
+"""Synthetic NYC DOOH dataset — screens, campaigns, creatives, targeting,
+pop_events, pacing_buckets.
 
 Run: ``uv run dooh-seed``
 
-Idempotent: keyed on `external_id` (screens), `external_id` (campaigns,
-creatives), `campaign_id` (targeting). Re-running skips existing rows via
-ON CONFLICT DO NOTHING. To regenerate from scratch, TRUNCATE the relevant
-tables first (no --reset flag yet).
+Idempotent: every seeder uses ON CONFLICT DO NOTHING against a natural or
+external key. Re-running skips existing rows. To regenerate from scratch,
+TRUNCATE the relevant tables first (no --reset flag yet).
 
-Two seeders run in order:
-  1. `seed_screens()` — 100 screens around 12 NYC anchors (M1.2).
-  2. `seed_campaigns()` — 10 campaigns + creatives + targeting (M1.4).
+Four seeders run in order:
+  1. `seed_screens()`         — 100 screens around 12 NYC anchors (M1.2).
+  2. `seed_campaigns()`       — 10 campaigns + creatives + targeting (M1.4).
+  3. `seed_pop_events()`      — ~30 PoP impressions across 3 days (M1.5).
+  4. `seed_pacing_buckets()`  — ~500 hourly slots, actuals from pop_events (M1.5).
 
-The campaign seeder samples screens (already in DB) to build targeting
-bounding-box MULTIPOLYGONs. It depends on screens existing first.
+pop_events depends on screens + campaigns + creatives + targeting. Pacing
+buckets depend on pop_events (actuals are computed from them).
 
 This is the dev-loop analogue of an ad-network CSV importer that would land
 in this slot in production.
@@ -26,11 +28,18 @@ import random
 from dataclasses import dataclass
 
 from geoalchemy2 import WKTElement
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from dooh_control_tower.db import async_session_factory
-from dooh_control_tower.models import Campaign, Creative, Screen, Targeting
+from dooh_control_tower.models import (
+    Campaign,
+    Creative,
+    PacingBucket,
+    PopEvent,
+    Screen,
+    Targeting,
+)
 
 # Fixed seed → reproducible network. Same seed every M1.x run, every test.
 SEED = 42
@@ -409,14 +418,235 @@ async def seed_campaigns() -> dict[str, int]:
     }
 
 
-async def _seed_all() -> tuple[dict[str, int], dict[str, int]]:
+# ---------------------------------------------------------------------------
+# M1.5 — pop_event partition helper + seeders
+# ---------------------------------------------------------------------------
+
+N_POP_EVENTS = 30
+POP_EVENT_DAYS_BACK = 3
+
+# Placeholder "cents per impression" so we can convert daily_budget_cents
+# → target impressions. M6.1 (pacing rebalancer) owns the real formula.
+# Real DOOH CPM is $5-20/mille; 1¢/imp = $10 CPM, a plausible midpoint.
+CPM_CENTS_PER_IMPRESSION = 1
+
+
+async def ensure_pop_event_partition(session, day: dt.date) -> None:
+    """Idempotently create a daily child partition for `day`.
+
+    Postgres requires the partition range bounds to be literal SQL — we can't
+    parameterize them. The dates come from a trusted internal source (a
+    Python `date`), so f-string interpolation is safe here.
+
+    M3.4 sync writes and the M3.5 bulk simulator both call this before
+    inserting rows for a given date. Calling for an existing partition is
+    a no-op thanks to `IF NOT EXISTS`.
+    """
+    next_day = day + dt.timedelta(days=1)
+    partition_name = f"pop_event_{day:%Y_%m_%d}"
+    await session.execute(
+        text(
+            f"CREATE TABLE IF NOT EXISTS {partition_name} "
+            f"PARTITION OF pop_event "
+            f"FOR VALUES FROM ('{day.isoformat()}') TO ('{next_day.isoformat()}')"
+        )
+    )
+
+
+async def _eligible_screens_for(
+    session, campaign_id, targeting_id
+) -> list[dict]:
+    """Screens inside this campaign's targeting polygon — same query M3.3
+    will use at ad-request time."""
+    stmt = (
+        select(Screen.id, Screen.market)
+        .join(Targeting, func.ST_Contains(Targeting.geom, Screen.geom))
+        .where(Targeting.id == targeting_id)
+    )
+    result = await session.execute(stmt)
+    return [dict(row._mapping) for row in result.all()]
+
+
+async def seed_pop_events() -> dict[str, int]:
+    """Insert ~30 synthetic PoP impressions across last 3 days for active
+    campaigns. Idempotent via natural-PK ON CONFLICT DO NOTHING."""
+    rng = random.Random(SEED + 2000)
+    today = dt.date.today()
+
+    # Two-query flow: (1) active campaigns + targeting, (2) per campaign,
+    # fetch creatives + eligible screens. Avoids a Cartesian join across
+    # creatives × screens.
+    async with async_session_factory() as session:
+        cstmt = select(
+            Campaign.id,
+            Campaign.external_id,
+            Targeting.id.label("targeting_id"),
+            Targeting.daypart_start_hour,
+            Targeting.daypart_end_hour,
+        ).join(Targeting, Targeting.campaign_id == Campaign.id).where(
+            Campaign.state == "active"
+        )
+        active = [dict(r._mapping) for r in (await session.execute(cstmt)).all()]
+
+        # Pre-fetch creatives per campaign + eligible screens per campaign.
+        per_campaign: dict = {}
+        for c in active:
+            creatives = (
+                await session.execute(
+                    select(Creative.id, Creative.duration_seconds).where(
+                        Creative.campaign_id == c["id"]
+                    )
+                )
+            ).all()
+            screens = await _eligible_screens_for(
+                session, c["id"], c["targeting_id"]
+            )
+            per_campaign[c["id"]] = {
+                "creatives": [dict(row._mapping) for row in creatives],
+                "screens": screens,
+                "daypart_start": c["daypart_start_hour"],
+                "daypart_end": c["daypart_end_hour"],
+            }
+
+        # Build event rows.
+        active_ids = list(per_campaign.keys())
+        if not active_ids:
+            return {"events": 0, "partitions": 0}
+
+        rows: list[dict] = []
+        partition_days: set[dt.date] = set()
+        for _ in range(N_POP_EVENTS):
+            cid = rng.choice(active_ids)
+            ctx = per_campaign[cid]
+            if not ctx["creatives"] or not ctx["screens"]:
+                continue
+            creative = rng.choice(ctx["creatives"])
+            screen = rng.choice(ctx["screens"])
+
+            days_ago = rng.randint(0, POP_EVENT_DAYS_BACK - 1)
+            day = today - dt.timedelta(days=days_ago)
+            # Clamp the hour into the campaign's daypart (end is exclusive).
+            start_h = ctx["daypart_start"]
+            end_h = max(start_h + 1, ctx["daypart_end"])
+            hour = rng.randint(start_h, end_h - 1)
+            minute = rng.randint(0, 59)
+            second = rng.randint(0, 59)
+            event_ts = dt.datetime(
+                day.year, day.month, day.day,
+                hour, minute, second,
+                tzinfo=dt.timezone.utc,
+            )
+            partition_days.add(day)
+            rows.append(
+                {
+                    "event_ts": event_ts,
+                    "event_date": day,
+                    "campaign_id": cid,
+                    "creative_id": creative["id"],
+                    "screen_id": screen["id"],
+                    "duration_seconds": creative["duration_seconds"],
+                }
+            )
+
+        # Ensure a daily partition exists for every distinct event date BEFORE
+        # we insert — otherwise rows land in pop_event_default (still valid,
+        # but leaks the dev-safety-net contract from ADR-0001).
+        for day in sorted(partition_days):
+            await ensure_pop_event_partition(session, day)
+
+        if rows:
+            await session.execute(
+                pg_insert(PopEvent).on_conflict_do_nothing(),
+                rows,
+            )
+        await session.commit()
+
+    return {"events": len(rows), "partitions": len(partition_days)}
+
+
+async def seed_pacing_buckets() -> dict[str, int]:
+    """Insert pacing target rows for active campaigns × last 3 days × 24 hours.
+    Computes `actual` from the just-seeded pop_events. Idempotent via PK."""
+    today = dt.date.today()
+
+    async with async_session_factory() as session:
+        active = (
+            await session.execute(
+                select(Campaign.id, Campaign.daily_budget_cents).where(
+                    Campaign.state == "active"
+                )
+            )
+        ).all()
+
+        # Aggregate pop_events into (campaign_id, hour_ts) counts, for our
+        # window. The DATE_TRUNC matches M6.1's intended pacing read pattern.
+        hour_floor = today - dt.timedelta(days=POP_EVENT_DAYS_BACK)
+        actuals_result = await session.execute(
+            select(
+                PopEvent.campaign_id,
+                func.date_trunc("hour", PopEvent.event_ts).label("hour_ts"),
+                func.count().label("actual"),
+            )
+            .where(PopEvent.event_date >= hour_floor)
+            .group_by(PopEvent.campaign_id, "hour_ts")
+        )
+        actual_by_key: dict[tuple, int] = {
+            (row.campaign_id, row.hour_ts): row.actual
+            for row in actuals_result.all()
+        }
+
+        rows: list[dict] = []
+        for c in active:
+            # target_per_hour = daily_budget / 24 / CPM (cents → impressions).
+            # Placeholder formula — M6.1 owns the real one (daypart-aware,
+            # priority-weighted, multi-day smoothed).
+            target_per_hour = max(
+                1, c.daily_budget_cents // (24 * CPM_CENTS_PER_IMPRESSION)
+            )
+            for days_ago in range(POP_EVENT_DAYS_BACK):
+                day = today - dt.timedelta(days=days_ago)
+                for hour in range(24):
+                    hour_ts = dt.datetime(
+                        day.year, day.month, day.day, hour,
+                        tzinfo=dt.timezone.utc,
+                    )
+                    rows.append(
+                        {
+                            "campaign_id": c.id,
+                            "hour_ts": hour_ts,
+                            "target": target_per_hour,
+                            "actual": actual_by_key.get((c.id, hour_ts), 0),
+                        }
+                    )
+
+        if rows:
+            await session.execute(
+                pg_insert(PacingBucket).on_conflict_do_nothing(),
+                rows,
+            )
+        await session.commit()
+
+    nonzero_actuals = sum(1 for v in actual_by_key.values() if v > 0)
+    return {"buckets": len(rows), "with_actuals": nonzero_actuals}
+
+
+# ---------------------------------------------------------------------------
+# Orchestration
+# ---------------------------------------------------------------------------
+
+
+async def _seed_all() -> tuple[dict, dict, dict, dict]:
     screen_tally = await seed_screens()
     campaign_tally = await seed_campaigns()
-    return screen_tally, campaign_tally
+    pop_tally = await seed_pop_events()
+    pacing_tally = await seed_pacing_buckets()
+    return screen_tally, campaign_tally, pop_tally, pacing_tally
 
 
 def main() -> None:
-    screen_tally, campaign_tally = asyncio.run(_seed_all())
+    screen_tally, campaign_tally, pop_tally, pacing_tally = asyncio.run(
+        _seed_all()
+    )
 
     total_screens = sum(screen_tally.values())
     print(f"Seeded synthetic network: {total_screens} screens.")
@@ -428,6 +658,18 @@ def main() -> None:
         f"Seeded synthetic campaigns: {campaign_tally['campaigns']} campaigns, "
         f"{campaign_tally['creatives']} creatives, "
         f"{campaign_tally['targetings']} targeting rows."
+    )
+
+    print()
+    print(
+        f"Seeded PoP events: {pop_tally['events']} impressions "
+        f"across {pop_tally['partitions']} daily partitions."
+    )
+
+    print()
+    print(
+        f"Seeded pacing buckets: {pacing_tally['buckets']} hourly slots "
+        f"({pacing_tally['with_actuals']} with non-zero actuals)."
     )
 
 

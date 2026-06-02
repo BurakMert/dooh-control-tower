@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>M1.5 — Partitioned PoP events + pacing buckets</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', themeVariables: { fontSize: '14px' } });
+</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  details > summary { cursor: pointer; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "▸ "; color: #64748b; }
+  details[open] > summary::before { content: "▾ "; }
+  pre { font-size: 12px; line-height: 1.4; }
+  .mermaid { background: white; }
+  table.compact td, table.compact th { padding: 0.25rem 0.75rem; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: top; }
+  table.compact th { font-weight: 600; color: #475569; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+<div class="max-w-4xl mx-auto px-6 py-10 space-y-10">
+
+  <header class="space-y-2">
+    <p class="text-sm text-slate-500">Reflection · M1.5</p>
+    <h1 class="text-3xl font-semibold">First time-series — partitioned PoP events</h1>
+    <p class="text-slate-600">The domain stops being snapshots and starts being a stream. <code>pop_event</code> is the impression store — one row per render, partitioned by day, dimensioned to handle ~35M rows at portfolio scale. <code>pacing_bucket</code> is the hourly aggregate M6.1 will live on. The first grill-with-docs session for a schema chunk produced one ADR, one CONTEXT.md, and a denser-than-usual decision tree.</p>
+  </header>
+
+  <!-- ────────────────────────────────────────  BIG PICTURE  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Big picture</h2>
+    <div class="mermaid bg-white border rounded p-4">
+flowchart LR
+  Screen[screen<br/>point geom] -- "ST_Contains" --> Eligible[eligible<br/>screens]
+  Campaign[campaign<br/>state+budget] --> Eligible
+  Targeting[targeting<br/>MULTIPOLYGON] --> Eligible
+  Eligible --> AdRequest["M3.4 ad request"]
+  AdRequest -- "writes 1 row" --> PopEvent[pop_event<br/>PARTITION BY day]
+  PopEvent --> Bucket["aggregate by hour"]
+  Bucket --> PacingBucket[pacing_bucket<br/>campaign × hour_ts]
+  PacingBucket --> Rebalancer[M6.1 pacing rebalancer]
+  PopEvent --> Heatmap[M4 heatmap<br/>hex × hour]
+  style PopEvent fill:#fef3c7
+  style PacingBucket fill:#dbeafe
+    </div>
+    <p class="text-sm text-slate-600">Two write paths: synchronous ad-server writes pop_event one row at a time (M3.4); a periodic job projects pop_event aggregates into pacing_bucket (M6.1). Same table, two consumers — same separation the rest of the codebase already follows (pure generator vs async upsert).</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  TL;DR  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">TL;DR — what's new</h2>
+    <ul class="list-disc list-inside text-slate-700 space-y-1">
+      <li>First <strong>declarative partitioning</strong> — <code>PARTITION BY RANGE (event_date)</code>, daily children created on demand.</li>
+      <li>First <strong>natural-key composite PK</strong> — no surrogate UUID. ON CONFLICT DO NOTHING gives free retry-idempotency.</li>
+      <li>First <strong>denormalized column</strong> on principle — <code>h3_r8</code> / <code>h3_r9</code> on pop_event for point-in-time correctness, not just speed.</li>
+      <li>First <strong>migration with hand-written DDL</strong> — autogen captured <code>postgresql_partition_by</code> cleanly; only the default partition needed an <code>op.execute()</code>.</li>
+      <li>First <strong>ADR</strong> (<a href="../adr/0001-pop-event-natural-pk-and-denormalized-h3.md" class="text-indigo-600 underline">ADR-0001</a>) — the three coupled choices above are hard-to-reverse and worth documenting.</li>
+      <li>First <strong>CONTEXT.md</strong> — glossary nailing down PoP, impression, pacing bucket, H3 cell, targeting polygon, daypart, eligibility.</li>
+    </ul>
+  </section>
+
+  <!-- ────────────────────────────────────────  THE BIG CLARIFICATION  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Partition granularity ≠ data resolution</h2>
+    <p class="text-slate-700">This was the key clarification during the grill. The two get conflated:</p>
+    <table class="compact text-sm w-full bg-white border rounded">
+      <thead><tr><th>Concept</th><th>What it controls</th><th>Our choice</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Partition granularity</strong></td><td>How Postgres physically splits rows into child tables. Drives retention (DROP PARTITION) + partition pruning at scan time.</td><td>Daily — one child per day.</td></tr>
+        <tr><td><strong>Data resolution</strong></td><td>The grain of one row — what's recorded in each event.</td><td>Per-impression, with <code>event_ts timestamptz</code> precise to the microsecond.</td></tr>
+      </tbody>
+    </table>
+    <p class="text-slate-700">So <strong>daily partitions don't lose hourly data</strong>. Every row inside the daily partition still has its full <code>event_ts</code>. The M4 heatmap groups by <code>date_trunc('hour', event_ts)</code> inside whatever partitions get scanned. Partition pruning eliminates days outside the range; the GROUP BY does the hour-level rollup inside those scanned days.</p>
+    <p class="text-slate-700">Why hourly partitioning would be wrong here: <strong>1,440 child tables</strong> (24h × 60d), tiny ~24K-row partitions where the catalog cost outweighs the pruning win, no retention pattern that wants "drop Tuesday 2pm." DOOH retention is per-day. Partition cadence should match retention cadence — that's the rule.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  THE 7 DECISIONS  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">The seven decisions (grill-with-docs)</h2>
+    <table class="compact text-sm w-full bg-white border rounded">
+      <thead><tr><th>#</th><th>Question</th><th>Chosen</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Grain of one pop_event row</td><td><strong>1 per impression / play</strong></td><td>Pre-PRD's 1:1; DOOH industry standard; M4 aggregates freely.</td></tr>
+        <tr><td>2</td><td>Partition cadence</td><td><strong>Daily</strong></td><td>Matches DOOH retention; ~580K rows/partition is the sweet spot; partition pruning aligns with M4 access pattern.</td></tr>
+        <tr><td>3</td><td>h3 columns</td><td><strong>On pop_event, nullable, now</strong></td><td>Point-in-time correctness; M4 heatmap JOIN-free; <code>[[feedback_yagni_calibration]]</code> — roadmap names M1.6.</td></tr>
+        <tr><td>4</td><td>PK shape</td><td><strong>Natural (event_ts, screen_id, creative_id, event_date)</strong></td><td>Identity is the impression; free dedup; matches pre-PRD. ADR-0001.</td></tr>
+        <tr><td>5</td><td>pacing_bucket time shape</td><td><strong><code>hour_ts timestamptz</code></strong></td><td>Cross-midnight queries are one predicate, not two; storage same; pre-PRD's shape.</td></tr>
+        <tr><td>6</td><td>Alembic + PARTITION BY</td><td><strong>SQLA table-arg + autogen + 1-line op.execute for default</strong></td><td>Autogen captured it cleanly; no hand-rewrite needed. Bonus.</td></tr>
+        <tr><td>7</td><td>Seed scale + idempotency</td><td><strong>Small (30 + 504) + natural-PK ON CONFLICT</strong></td><td>Unblocks M2 read tools; Q4 paid forward the idempotency.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ────────────────────────────────────────  WHY DENORMALIZE H3  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Why h3 is on the impression, not just the screen</h2>
+    <p class="text-slate-700">The "screens have geom; H3 is derived; JOIN at query time" intuition is the wrong one for an impression store. Two reasons:</p>
+    <ul class="list-disc list-inside text-slate-700 space-y-1">
+      <li><strong>Point-in-time correctness.</strong> An impression's true location is where the screen was <em>when it played</em>. If a kiosk relocates, historical pop_events must keep their original H3. JOINing to the current screen row would silently rewrite history — wrong for any reporting downstream.</li>
+      <li><strong>Hot-path JOIN-free aggregation.</strong> M4 heatmap: <code>SELECT h3_r8, count(*) FROM pop_event WHERE event_date BETWEEN ... GROUP BY h3_r8</code>. At 35M-row scale the JOIN cost is not theoretical.</li>
+    </ul>
+    <p class="text-slate-700">~16 bytes/row × 35M = ~560 MB of denorm cost over 60 days. Negligible. ADR-0001 captures the full reasoning.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  PARTITION PRUNING DEMO  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Partition pruning, demonstrated</h2>
+    <p class="text-slate-700">The point of daily partitions is that <code>WHERE event_date = ?</code> lets Postgres scan one child table instead of the parent's full physical extent. Verified at ship:</p>
+    <pre class="bg-white border rounded p-3 overflow-x-auto"><code>EXPLAIN SELECT count(*) FROM pop_event WHERE event_date = '2026-06-03';
+
+ Aggregate  (cost=18.76..18.77 rows=1 width=8)
+   ->  Seq Scan on <span class="text-emerald-700 font-semibold">pop_event_2026_06_03</span> pop_event  (cost=0.00..18.75 rows=4)
+         Filter: (event_date = '2026-06-03'::date)</code></pre>
+    <p class="text-slate-700">No scan of <code>pop_event_default</code>, no scan of other dates. Just the matching daily partition. At 35M-row scale, this is the difference between a 50ms query and a 5-second one.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  VERIFICATION  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Verification</h2>
+    <table class="compact text-sm w-full bg-white border rounded">
+      <thead><tr><th>Check</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td><code>\d+ pop_event</code> shows partition key + default</td><td><code>Partition key: RANGE (event_date)</code>, <code>Partitions: pop_event_default DEFAULT</code> ✓</td></tr>
+        <tr><td>Natural PK shape</td><td><code>(event_ts, event_date, screen_id, creative_id)</code> ✓</td></tr>
+        <tr><td>Two secondary indexes auto-cascaded to child partitions</td><td>(campaign_id, event_date, event_ts) + (screen_id, event_date) ✓</td></tr>
+        <tr><td>3 daily partitions auto-created via <code>ensure_pop_event_partition()</code></td><td>2026_06_01 / 06_02 / 06_03 ✓</td></tr>
+        <tr><td>30 pop_events routed to daily partitions</td><td><code>pop_event_default</code> count = 0 ✓ (no leak)</td></tr>
+        <tr><td>504 pacing buckets (7 active × 3 days × 24h)</td><td>28 buckets with non-zero actuals — JOIN works ✓</td></tr>
+        <tr><td>Partition pruning on <code>WHERE event_date = ?</code></td><td>EXPLAIN: single-child scan, no parent scan ✓</td></tr>
+        <tr><td>Idempotency (2nd run)</td><td>Counts unchanged: 30 / 504 ✓</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ────────────────────────────────────────  WORKFLOW  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Workflow notes</h2>
+    <ul class="list-disc list-inside text-slate-700 space-y-1">
+      <li><strong>First full grill-with-docs schema session.</strong> 7 questions, ~1 hour. Produced one ADR + one CONTEXT.md + the design summary. Worth it — the partition-vs-resolution confusion would've shown up in M4 otherwise.</li>
+      <li><strong>Pre-PRD challenged my Q4 default.</strong> I'd queued composite (id, event_date) in the roadmap; the grill surfaced the natural-PK alternative via pre-PRD's intent. Better answer than my starting point. <code>[[feedback]]</code>: the queued roadmap recommendations aren't always right; the grill earns its keep.</li>
+      <li><strong>Alembic surprise — autogen captured <code>postgresql_partition_by</code>.</strong> I'd planned a one-line hand-edit; turned out to be zero. SQLA 1.2.6+ feature works through to Alembic autogen output.</li>
+      <li><strong>ensure_partition() contract.</strong> The Python helper paid for itself immediately — the seed wrote rows for 3 distinct days; without partitions they'd have landed in <code>_default</code>. M3.4 sync writes will use the same helper.</li>
+    </ul>
+  </section>
+
+  <!-- ────────────────────────────────────────  GO DEEPER  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Go deeper</h2>
+    <ul class="list-disc list-inside text-slate-700 space-y-1">
+      <li><strong>BRIN vs btree</strong> on time-series PK. At 580K rows/partition, btree wins; cross-over point for BRIN dominance.</li>
+      <li><strong>Generated columns + IMMUTABLE casts.</strong> <code>event_date GENERATED ALWAYS AS ((event_ts AT TIME ZONE 'UTC')::date) STORED</code> would remove the Python-side discipline; trade-off on migration complexity.</li>
+      <li><strong>Default partition trap.</strong> Why a default partition blocks attaching overlapping ranges; how prod systems handle it (alarm + drain).</li>
+      <li><strong>pg_partman.</strong> What it automates beyond <code>ensure_partition()</code> — retention cadence, premake, sub-partitioning. Worth before M3.5 (high-QPS simulator)?</li>
+      <li><strong>Composite-PK insert cost.</strong> 4-column PK vs single UUID — write-path B-tree maintenance compared at 35M-row scale.</li>
+      <li><strong>Timezone discipline.</strong> Storing hour_ts UTC vs America/New_York. Trade-off for multi-region (which we don't model). The "evening prime time" boundary slips ~4h vs NYC wall clock — when does that bite?</li>
+      <li><strong>The ADR pattern itself.</strong> When is a coupled decision better as one ADR vs three? ADR-0001 bundles three because they're meaningless apart; what would make me split them?</li>
+    </ul>
+  </section>
+
+  <footer class="text-sm text-slate-500 pt-6 border-t">
+    <p>Shipped 2026-06-03. ADR: <a href="../adr/0001-pop-event-natural-pk-and-denormalized-h3.md" class="text-indigo-600 underline">ADR-0001</a>. Glossary: <a href="../../CONTEXT.md" class="text-indigo-600 underline">CONTEXT.md</a>. Next chunk: M1.6 — H3 indexing job (precompute res-8 and res-9 cells per screen + backfill pop_events).</p>
+  </footer>
+
+</div>
+</body>
+</html>
