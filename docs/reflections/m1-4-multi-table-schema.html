@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>M1.4 — Multi-table schema</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', themeVariables: { fontSize: '14px' } });
+</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  details > summary { cursor: pointer; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "▸ "; color: #64748b; }
+  details[open] > summary::before { content: "▾ "; }
+  pre { font-size: 12px; line-height: 1.4; }
+  .mermaid { background: white; }
+  table.compact td, table.compact th { padding: 0.25rem 0.75rem; border-bottom: 1px solid #e2e8f0; text-align: left; }
+  table.compact th { font-weight: 600; color: #475569; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+<div class="max-w-4xl mx-auto px-6 py-10 space-y-10">
+
+  <header class="space-y-2">
+    <p class="text-sm text-slate-500">Reflection · M1.4</p>
+    <h1 class="text-3xl font-semibold">First foreign keys — campaign, creative, targeting</h1>
+    <p class="text-slate-600">The domain stops being a flat list of screens and starts being a graph. Three new tables, two new relationship shapes (1:N and 1:1), one new geometry type (<code>MULTIPOLYGON</code>), and the first multi-table seed orchestration. The agent can now describe a campaign — and from M3 onward, decide which screens it's eligible to run on.</p>
+  </header>
+
+  <!-- ────────────────────────────────────────  BIG PICTURE  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Big picture</h2>
+    <div class="mermaid bg-white border rounded p-4">
+erDiagram
+  campaign ||--o{ creative : "1:N (cascade)"
+  campaign ||--o| targeting : "1:1 (cascade)"
+  screen }o..o{ targeting : "spatial (ST_Contains)"
+  campaign {
+    uuid id PK
+    string external_id UK
+    string advertiser
+    string state
+    date start_date
+    date end_date
+    int daily_budget_cents
+    string pacing_strategy
+  }
+  creative {
+    uuid id PK
+    uuid campaign_id FK
+    string external_id UK
+    string creative_type
+    int width
+    int height
+  }
+  targeting {
+    uuid id PK
+    uuid campaign_id FK_UK
+    geometry geom "MULTIPOLYGON 4326"
+    int daypart_start_hour
+    int daypart_end_hour
+  }
+  screen {
+    uuid id PK
+    geometry geom "POINT 4326"
+    string market
+  }
+    </div>
+    <p class="text-sm text-slate-600">Two relational edges (FK), one spatial edge (PostGIS). Real DOOH platforms reuse creatives across campaigns (N:N), but for portfolio scope 1:N is honest enough — promote in M5 if it actually bites. <code>screen → targeting</code> is dotted because it's a runtime predicate (<code>ST_Contains</code>), not a stored edge.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  TL;DR  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">TL;DR — what's new vs M1.1</h2>
+    <ul class="list-disc list-inside text-slate-700 space-y-1">
+      <li>First <strong>foreign keys</strong> — <code>ON DELETE CASCADE</code> from <code>creative</code> and <code>targeting</code> back to <code>campaign</code>. Drop a campaign, the dependents go too.</li>
+      <li>First <strong>1:1 relationship</strong>, encoded as <code>UNIQUE</code> on <code>targeting.campaign_id</code> + <code>relationship(..., uselist=False)</code> on the ORM side.</li>
+      <li>First <strong>multi-table autogen</strong>. The <code>include_object</code> filter from M1.1 kept TIGER tables out of the diff — clean 60-line migration instead of last time's 700-line nightmare.</li>
+      <li>First <strong>MULTIPOLYGON</strong> column. POLYGON would suffice today; MULTIPOLYGON future-proofs disconnected coverage (paste-in polygons in M5.4).</li>
+      <li>First <strong>two-phase async seed</strong>. Insert parents → re-read IDs → wire children. Avoids string-keyed FK gymnastics.</li>
+    </ul>
+  </section>
+
+  <!-- ────────────────────────────────────────  THE 4 DECISIONS  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">The four decisions</h2>
+    <table class="compact text-sm w-full bg-white border rounded">
+      <thead><tr><th>Decision</th><th>Chosen</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>Migration count</td><td><strong>One</strong></td><td>Three logically-coupled tables. Single rollback boundary. Staging is for live-data schemas; we have none.</td></tr>
+        <tr><td>Campaign ↔ Creative</td><td><strong>1:N</strong></td><td>Real DOOH is N:N, but our roadmap doesn't name reuse. <code>[[feedback_yagni_calibration]]</code>: no named future, simple wins. Promote later if M5 needs it.</td></tr>
+        <tr><td>Targeting shape</td><td><strong>Separate table</strong></td><td>M3.3 hot path is <code>ST_Contains(t.geom, s.geom)</code>. PostGIS GiST over typed geometry beats JSONB-extracted GeoJSON on both speed and ergonomics.</td></tr>
+        <tr><td>Seed strategy</td><td><strong><code>seed_campaigns()</code> in seed.py</strong></td><td>Same <code>SEED=42</code> regime; offset by 1000 so screen and campaign RNG streams don't share state. <code>main()</code> orchestrates both.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ────────────────────────────────────────  JSONB DETOUR  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">The JSONB-vs-table tension</h2>
+    <p class="text-slate-700">The roadmap explicitly flagged this. JSONB is real-world tempting: <code>campaign.targeting</code> as one JSONB blob = no join, schema-flex, easy to evolve. We didn't pick it. Reasoning:</p>
+    <ul class="list-disc list-inside text-slate-700 space-y-1">
+      <li><strong>Spatial indexing.</strong> GiST works on geometry columns. JSONB-stored GeoJSON has to be deserialized + re-cast (<code>ST_GeomFromGeoJSON(t.targeting->'geom')</code>) per row — kills the index.</li>
+      <li><strong>FK leverage.</strong> A separate row means cascade rules, partial uniqueness, future foreign keys (e.g., link a targeting preset). JSONB is opaque to the relational layer.</li>
+      <li><strong>Schema observability.</strong> <code>\d targeting</code> shows shape; <code>\d campaign</code> with a JSONB column shows nothing about what's inside.</li>
+    </ul>
+    <p class="text-slate-700">Where JSONB <em>would</em> win: if targeting were truly polymorphic (geo, contextual, audience, behavioral all in one blob) and the read pattern were "fetch the whole campaign as one document." Neither is true here.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  TWO-PHASE SEED  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Two-phase async seed</h2>
+    <p class="text-slate-700">Children need <code>campaign_id</code> FKs, but the campaign UUIDs are server-generated. The seed handles this in two passes inside one session:</p>
+    <pre class="bg-white border rounded p-3 overflow-x-auto"><code>1. INSERT campaigns ON CONFLICT DO NOTHING  ← idempotent
+2. SELECT id, external_id FROM campaign      ← resolve mapping
+   WHERE external_id IN (...)                  (picks up existing too)
+3. INSERT creatives + targeting               ← FK-wired
+   ON CONFLICT DO NOTHING</code></pre>
+    <p class="text-slate-700">The pure generator (<code>_generate_campaign_rows</code>) carries a placeholder <code>_campaign_external_id</code> on each child row. The async seeder pops it and substitutes the resolved UUID via <code>_attach_campaign_fk</code>. Separation of concerns: the generator stays unit-testable; only the FK-wiring step touches the DB.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  TARGETING POLYGONS  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Why bounding boxes (not shapely)</h2>
+    <p class="text-slate-700">Each campaign's targeting polygon = padded bbox around 3-8 sampled screens. Hand-rolled WKT, no shapely dep. Verified the polygons aren't trivially empty:</p>
+    <pre class="bg-white border rounded p-3 overflow-x-auto"><code>SELECT c.external_id, count(s.id) AS hits
+FROM campaign c
+JOIN targeting t ON t.campaign_id = c.id
+LEFT JOIN screen s ON ST_Contains(t.geom, s.geom)
+GROUP BY c.external_id;
+-- 19–48 screens per polygon. M3.3 eligibility sets will not be empty.</code></pre>
+    <p class="text-slate-700">The bbox + buffer approach over-covers the sampled set (intentional — buffers screens near the edge inside) and under-models true campaign coverage (which is rarely rectangular). Good enough for the seed; M5.4 will introduce paste-in polygons for real shapes. Adding shapely now would have been <code>[[feedback_yagni_calibration]]</code> on the wrong side — the future is named, but PostGIS-side <code>ST_Buffer(ST_ConvexHull(...))</code> covers it without a Python dep.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  VERIFICATION  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Verification</h2>
+    <table class="compact text-sm w-full bg-white border rounded">
+      <thead><tr><th>Check</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td><code>\d campaign / creative / targeting</code></td><td>3 tables, FK + CASCADE, UNIQUE on targeting.campaign_id, GiST on geom ✓</td></tr>
+        <tr><td><code>SELECT count(*)</code> after seed</td><td>10 campaigns / 16 creatives / 10 targeting ✓</td></tr>
+        <tr><td>State distribution</td><td>active 7, draft 1, paused 1, completed 1 ✓</td></tr>
+        <tr><td>Per-campaign creative count</td><td>1–3, weighted ✓</td></tr>
+        <tr><td>Daypart spread</td><td>0–24h windows (full + daytime + biz+) ✓</td></tr>
+        <tr><td>Targeting polygon area</td><td>14–67 km² (NYC neighborhood scale) ✓</td></tr>
+        <tr><td><code>ST_Contains</code> screens-per-polygon</td><td>19–48 hits/polygon — M3.3-ready ✓</td></tr>
+        <tr><td>Idempotency (2nd run)</td><td>Counts unchanged ✓</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ────────────────────────────────────────  GO DEEPER  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Go deeper</h2>
+    <ul class="list-disc list-inside text-slate-700 space-y-1">
+      <li><strong>1:1 in SQLA</strong> — <code>uselist=False</code> vs <code>scalar_relationship</code>. When does it matter for query planning?</li>
+      <li><strong>Cascade semantics</strong> — DB-level <code>ON DELETE CASCADE</code> vs SQLA-level <code>cascade="all, delete-orphan"</code>. We have both; when do they diverge?</li>
+      <li><strong>POLYGON vs MULTIPOLYGON</strong> — type coercion rules in PostGIS, why <code>ST_Multi</code> exists, and when to use a <code>GEOMETRY</code> generic column with a <code>CHECK</code>.</li>
+      <li><strong>RNG stream isolation</strong> — when adding a second seeded random stream, should we use a single rng + <code>jumpahead</code> (numpy) or two independent <code>Random(seed_n)</code>? Trade-offs.</li>
+      <li><strong>Two-phase insert pattern</strong> — could <code>RETURNING id</code> on the parent INSERT eliminate the SELECT? (Yes — with psycopg3 and SQLA Core; design tax was minor.) Revisit if seed scale grows.</li>
+      <li><strong>Budget representation</strong> — cents-as-int vs <code>numeric(12, 2)</code> vs Postgres <code>money</code>. Which is the standard for ad-tech / fintech, and why does the answer differ?</li>
+    </ul>
+  </section>
+
+  <footer class="text-sm text-slate-500 pt-6 border-t">
+    <p>Shipped 2026-06-03. Next chunk: M1.5 — <code>pop_event</code> daily partitions + <code>pacing_bucket</code>. First time-series partitioning in the project.</p>
+  </footer>
+
+</div>
+</body>
+</html>
