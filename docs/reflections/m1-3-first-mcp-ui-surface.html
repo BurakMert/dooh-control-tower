@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>M1.3 — First mcp-ui surface</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', themeVariables: { fontSize: '14px' } });
+</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  details > summary { cursor: pointer; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "▸ "; color: #64748b; }
+  details[open] > summary::before { content: "▾ "; }
+  pre { font-size: 12px; line-height: 1.4; }
+  .mermaid { background: white; }
+  table.compact td, table.compact th { padding: 0.4rem 0.75rem; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+  .bad { background: #fef2f2; }
+  .good { background: #f0fdf4; }
+  .neutral { background: #f8fafc; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+<div class="max-w-4xl mx-auto px-6 py-10 space-y-10">
+
+  <header class="space-y-2">
+    <p class="text-sm text-slate-500">Reflection · M1.3 · pulled forward from M2</p>
+    <h1 class="text-3xl font-semibold">First mcp-ui surface — five walls and a verified render</h1>
+    <p class="text-slate-600">A Leaflet map of 100 NYC screens, rendered inline in an MCP host. The map itself was the easy part. Getting it to actually render took walking through five distinct walls in the mcp-ui spec — and then discovering that Claude Desktop's render is broken in stock builds, while MCPJam Inspector renders it correctly. This reflection is half the implementation, half the forensic record.</p>
+  </header>
+
+  <!-- ────────────────────────────────────────  TL;DR  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">TL;DR</h2>
+    <p class="text-sm">Build path required <strong>all five</strong> of these to render in spec-compliant MCP hosts:</p>
+    <ol class="list-decimal list-inside text-sm space-y-1">
+      <li>Tool decorated with <code>meta={"ui": {"resourceUri": "ui://..."}}</code> (MCP Apps SEP-1724 signal).</li>
+      <li>Resource registered via <code>@mcp.resource(uri, mime_type="text/html;profile=mcp-app")</code> — the <code>;profile=mcp-app</code> modifier is what hosts treat as "this is a UI surface, not plain HTML."</li>
+      <li>HTML imports <code>@modelcontextprotocol/ext-apps@^1.7.0</code> and calls <code>App.connect({strict: true})</code> — without this, hosts iframe the HTML but the handshake never completes.</li>
+      <li>Resource <code>meta</code> carries <code>"mcpui.dev/ui-preferred-frame-size": ["100%","560px"]</code> — without it, some hosts size the iframe at 0px.</li>
+      <li>HTML uses <code>height: 100vh</code> + <code>min-height</code> instead of <code>height: 100%</code> — defends against parent-iframe height collapse.</li>
+    </ol>
+    <p class="text-sm mt-3">Verification: <strong>renders cleanly in MCPJam Inspector</strong> (npx @mcpjam/inspector). <strong>Does not render in stock Claude Desktop</strong> despite the host recognizing the tool as Interactive and injecting "widget rendered" into the agent context. Bug filed in the project log.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  BIG PICTURE  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Big picture</h2>
+    <p>The chain that produces a rendered map in a working mcp-ui host:</p>
+    <div class="mermaid bg-white border rounded p-4">
+flowchart LR
+  A["User<br/>'show me the map'"] --> B["Agent calls<br/>show_screen_map"]
+  B --> C["tools/call returns<br/>text content +<br/>_meta.ui.resourceUri"]
+  C --> D["Host reads<br/>_meta.ui.resourceUri"]
+  D --> E["resources/read<br/>ui://.../screen-map"]
+  E --> F["@mcp.resource handler<br/>queries DB, builds HTML"]
+  F --> G["text/html;profile=mcp-app<br/>+ preferred-frame-size"]
+  G --> H["Host iframes HTML<br/>at preferred size"]
+  H --> I["ext-apps App.connect()<br/>handshake completes"]
+  I --> J["Leaflet renders<br/>100 markers inline"]
+  style C fill:#dbeafe
+  style D fill:#fef3c7
+  style F fill:#dcfce7
+  style I fill:#fef3c7
+  style J fill:#dcfce7
+    </div>
+    <p class="text-sm text-slate-600">Every arrow is a contract. Miss any one (wrong MIME, missing <code>_meta</code>, no <code>App.connect()</code>, no frame size) and the host either rejects the resource, accepts it but shows it as text, iframes it at 0px, or iframes the HTML but never finishes the handshake. We hit each failure mode in sequence.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  THE FIVE WALLS  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">The five walls — symptoms and fixes</h2>
+    <table class="compact w-full text-sm">
+      <thead class="text-left text-slate-500">
+        <tr><th>Wall</th><th>Symptom</th><th>Fix</th></tr>
+      </thead>
+      <tbody>
+        <tr class="bad">
+          <td><strong>1. Inline vs MCP Apps</strong></td>
+          <td>Tool returned <code>UIResource</code> inline in <code>content[]</code>. Claude Desktop showed it as a collapsed "Result" widget.</td>
+          <td>Added <code>meta={"ui": {"resourceUri": ...}}</code> to tool. Registered HTML as <code>@mcp.resource()</code>. Modern hosts fetch via <code>resources/read</code>.</td>
+        </tr>
+        <tr class="bad">
+          <td><strong>2. MIME modifier</strong></td>
+          <td>"Unsupported UI resource content format" error. The Python SDK ships plain <code>text/html</code>.</td>
+          <td>Override to <code>text/html;profile=mcp-app</code> via the <code>mime_type</code> kwarg on <code>@mcp.resource()</code> and by mutating <code>ui.resource.mimeType</code> on the inline UIResource.</td>
+        </tr>
+        <tr class="bad">
+          <td><strong>3. No handshake</strong></td>
+          <td>Resource accepted, but HTML shown as code text. Host iframed it, waited for handshake, gave up.</td>
+          <td>HTML imports <code>@modelcontextprotocol/ext-apps@^1.7.0</code> and calls <code>App.connect({strict:true})</code>. Older <code>postMessage('ui-lifecycle-iframe-ready')</code> kept as fallback.</td>
+        </tr>
+        <tr class="bad">
+          <td><strong>4. 0px iframe</strong></td>
+          <td>Agent narrated "Here's the map!" and host injected "widget rendered" into context, but the iframe was invisible (0 effective height).</td>
+          <td>Added <code>"mcpui.dev/ui-preferred-frame-size": ["100%","560px"]</code> to resource <code>meta</code>.</td>
+        </tr>
+        <tr class="bad">
+          <td><strong>5. CSS height collapse</strong></td>
+          <td>Defensive: even with a 560px iframe, <code>html, body { height: 100% }</code> evaluates to 0 if the parent doesn't set explicit height.</td>
+          <td>Switched to <code>height: 100vh; min-height: 560px</code>. Added <code>map.invalidateSize()</code> after the next frame so Leaflet recomputes after host resize.</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ────────────────────────────────────────  VERIFICATION  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Verification — MCPJam vs Claude Desktop</h2>
+    <p>The five fixes above all passed isolated checks (probe, standalone resource read, browser preview of the raw HTML). Claude Desktop still wouldn't render the map. To distinguish "our bug" from "host bug" we tested in a second host.</p>
+
+    <div class="grid md:grid-cols-2 gap-4">
+      <div class="border rounded p-4 bg-white">
+        <p class="text-xs uppercase tracking-wide text-slate-500">MCPJam Inspector</p>
+        <p class="font-medium text-sm mt-1 text-emerald-700">✓ Renders cleanly</p>
+        <ul class="text-sm space-y-1 mt-2 list-disc list-inside">
+          <li>STDIO transport (same as Claude Desktop)</li>
+          <li>100 markers visible, color-coded by market</li>
+          <li>Leaflet controls (zoom, pan) live</li>
+          <li>Auto-fit bounds correct (NYC + outer boroughs)</li>
+          <li>Popups work on marker click</li>
+        </ul>
+      </div>
+      <div class="border rounded p-4 bg-white">
+        <p class="text-xs uppercase tracking-wide text-slate-500">Claude Desktop</p>
+        <p class="font-medium text-sm mt-1 text-rose-700">✗ Iframe present, contents invisible</p>
+        <ul class="text-sm space-y-1 mt-2 list-disc list-inside">
+          <li>Categorizes <code>show_screen_map</code> as <em>"Interactive tools"</em> (Settings → Connectors)</li>
+          <li>Injects "[interactive widget rendered]" into agent context</li>
+          <li>Agent narrates "Here's your map!"</li>
+          <li>Iframe is allocated; renders empty</li>
+        </ul>
+      </div>
+    </div>
+
+    <p class="text-sm mt-3">Conclusion: <strong>implementation is spec-correct.</strong> Claude Desktop's mcp-ui render path has a bug in the stock build as of 2026-06-02. Tracking via the <code>anthropics/claude-ai-mcp#165</code> thread referenced in the chunk's commit message. Phase 1 development can continue against MCPJam for visual surfaces; Phase 2 (own canvas) removes the dependency entirely.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  HOW IT WORKS  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">How it works — the wire shape</h2>
+
+    <p>Tool listing (<code>tools/list</code>) — the discovery hook:</p>
+<pre class="bg-slate-900 text-slate-100 rounded p-3 overflow-x-auto">{{
+  "name": "show_screen_map",
+  "description": "Render the screen network on a Leaflet map...",
+  "inputSchema": {{ "properties": {{}}, "type": "object" }},
+  "_meta": {{
+    "ui": {{ "resourceUri": "ui://dooh-control-tower/screen-map" }}
+  }}
+}}</pre>
+
+    <p>Tool call (<code>tools/call</code>) — text content only, no embedded UI:</p>
+<pre class="bg-slate-900 text-slate-100 rounded p-3 overflow-x-auto">{{
+  "content": [{{
+    "type": "text",
+    "text": "Rendering the screen network map (100 screens across Manhattan, Brooklyn, and Queens)."
+  }}],
+  "isError": false
+}}</pre>
+
+    <p>Resource read (<code>resources/read</code>) — the actual UI:</p>
+<pre class="bg-slate-900 text-slate-100 rounded p-3 overflow-x-auto">{{
+  "contents": [{{
+    "uri": "ui://dooh-control-tower/screen-map",
+    "mimeType": "text/html;profile=mcp-app",
+    "meta": {{
+      "mcpui.dev/ui-preferred-frame-size": ["100%", "560px"]
+    }},
+    "text": "&lt;!doctype html&gt;...26KB of self-contained map HTML..."
+  }}]
+}}</pre>
+
+    <p class="text-sm">Two round-trips per UI surface: tool call (data + UI reference), then resource read (the HTML itself). Cost: one extra hop. Benefit: the HTML never enters the model's context window, only the user's view.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  WHY THIS WAY  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Why this way</h2>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">1. Why pull mcp-ui forward from M2.4/M2.5</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>Two reasons that turned out to be even more right than expected:</p>
+        <ol class="list-decimal list-inside space-y-1">
+          <li><strong>Pipeline validation.</strong> If we'd hit the five walls in M2.4 under "third UI chunk in three days" pressure, it would have been brutal. Discovering the full staircase now, when M1.3 has the only timeline that allows real research detours, means M2.4 and M2.5 are mechanical reskins.</li>
+          <li><strong>Motivation.</strong> M1.1 and M1.2 were schema and seed. M1.3 gave us the first "wow" moment — 100 dots on a real map, in real time, after a long Postgres grind.</li>
+        </ol>
+        <p>The cost: M1 grew from 5 to 6 chunks AND this one took ~3 pomodoros instead of 1. Trade I'd make again — but next time the budget for "first-of-its-kind chunks" should be 2-3 pomodoros from the start, not 1.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">2. Why <code>rawHtml + text</code> over <code>externalUrl</code></summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p><code>externalUrl</code> means the Resource carries a URL pointing at our FastAPI app; the host iframes that URL.</p>
+        <p><code>rawHtml + text</code> means the resource <em>contains</em> the HTML literally. Host iframes it via <code>srcdoc</code>.</p>
+        <p>For "render a snapshot of the current network state," <code>rawHtml</code> wins on three axes:</p>
+        <ul class="list-disc list-inside space-y-1">
+          <li><strong>Fewer moving parts.</strong> No FastAPI route, no CORS dance, no "is uvicorn reachable from the host's sandbox?" question.</li>
+          <li><strong>Self-contained debugging.</strong> The HTML is in the resource read response. Save to a file, open in a browser — that's the failure-isolation tool that confirmed our HTML was right while Claude Desktop kept failing to render it.</li>
+          <li><strong>Snapshot semantics.</strong> Each call returns current state. M1.2 re-seed → next call shows the new screens.</li>
+        </ul>
+        <p>When to switch: M4.3 (heatmap with time slider). Live state, user-driven interaction, existing FastAPI surface.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">3. Why Leaflet + CARTO Voyager over MapLibre + vector tiles</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>Leaflet is ~40KB raster-tile rendering via DOM. MapLibre is ~200KB vector tiles via WebGL. In a sandboxed iframe, the smaller-and-safer path wins for the first ship — and WebGL sometimes hits sandbox restrictions in unexpected ways.</p>
+        <p>CARTO Voyager Light over plain OSM: no-token, cleaner cartography. Same <code>L.tileLayer</code> API — different URL template.</p>
+        <p>MapLibre worth the weight in M4.3 — GPU rendering helps with H3 hex overlays.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">4. Why two independent tools (<code>list_screens</code> + <code>show_screen_map</code>)</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p><code>list_screens</code> returns <code>list[ScreenSummary]</code> — the data shape M2.3 will need. <code>show_screen_map</code> returns the UI. Each does its own DB query.</p>
+        <ul class="list-disc list-inside space-y-1">
+          <li><strong>Different intents.</strong> <em>"How many billboards in Brooklyn?"</em> → <code>list_screens</code> + filter. <em>"Show me the network"</em> → <code>show_screen_map</code>.</li>
+          <li><strong>Decoupled evolution.</strong> M2.3 adds filter parameters to <code>list_screens</code>. The map shouldn't be coupled to those.</li>
+        </ul>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">5. Why color by market, not by screen_type</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>Markets: 3 values, geographically clustered → 3 colored regions, instantly readable.</p>
+        <p>Screen types: 4 values, distributed within markets → mixed-color noise in every borough, no spatial signal.</p>
+        <p>Rule: the color dimension should align with the geographic dimension when both are present. <code>screen_type</code> shows up in the popup — that's where attribute info belongs when it has no spatial story.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">6. JSON island over inline JS string</summary>
+      <div class="mt-3 text-sm space-y-2">
+<pre class="bg-slate-100 rounded p-2">// Inline JS — escape dance problem:
+&lt;script&gt;const SCREENS = {{json.dumps(screens)}};&lt;/script&gt;</pre>
+<pre class="bg-slate-100 rounded p-2">// JSON island — chose this:
+&lt;script type="application/json" id="screens-data"&gt;{{screens_json}}&lt;/script&gt;
+&lt;script&gt;const SCREENS = JSON.parse(document.getElementById('screens-data').textContent);&lt;/script&gt;</pre>
+        <p>JSON-in-JS-string has subtle escape problems: <code>&lt;/script&gt;</code> sequences in the data, backslashes, quotes. JSON island sidesteps all of it — script <code>type</code> isn't JS so the browser treats contents as opaque text; <code>JSON.parse</code> handles the parse.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">7. <code>height: 100vh</code> over <code>height: 100%</code></summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p><code>height: 100%</code> requires the parent to have a defined height. If the host iframe is sized at <code>auto</code>, <code>body { height: 100% }</code> evaluates to 0. Then Leaflet computes its tiles into a 0-height container and the map "renders" invisibly.</p>
+        <p><code>height: 100vh</code> is viewport-relative — 100% of the iframe's own viewport height, regardless of what the host set the iframe's CSS height to. Belt-and-suspenders with <code>min-height: 560px</code>.</p>
+        <p>Plus: <code>requestAnimationFrame(() =&gt; map.invalidateSize())</code> after init, and <code>window.addEventListener('resize', ...)</code> after that, so Leaflet recomputes when the host eventually applies the preferred frame size.</p>
+      </div>
+    </details>
+
+  </section>
+
+  <!-- ────────────────────────────────────────  WORKFLOW NOTES  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Workflow notes</h2>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">Browser preview as failure-isolation</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>After every code change, the resource was dumped to <code>/tmp/screen-map-preview.html</code> and opened in a browser. The map rendered cleanly there throughout — that's the diagnostic that told us the HTML was right while Claude Desktop kept failing.</p>
+        <p>Order of operations for any future mcp-ui chunk: <strong>(1) build HTML</strong> → <strong>(2) save to file</strong> → <strong>(3) open in browser</strong> → <strong>(4) then test in host</strong>. Each step is independently verifiable.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">Pivoting hosts when the primary one fails</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>After ~4 rounds of "tweak server-side, retest Claude Desktop, still doesn't render," the right move was to <em>test in a different host</em>. MCPJam Inspector (<code>npx @mcpjam/inspector@latest</code>) renders the map cleanly via STDIO.</p>
+        <p>That single test converted hours of "is this our bug?" anxiety into definitive ground truth: <em>our implementation is right; this host has a bug</em>. Worth burning a pomodoro on second-host verification any time the primary host's failures are silent or ambiguous.</p>
+        <p>(Goose was the first second-host attempt — failed at <code>brew tap</code>. Lesson: pick the host with the lightest install for verification.)</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">grill-with-docs got 90%. The last 10% came from the dev community.</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>The opening grill picked the right Resource shape and tool pattern. What it didn't surface: the <code>;profile=mcp-app</code> MIME modifier (older Ruby doc, dropped from Python SDK), the <code>App.connect()</code> handshake requirement (newer spec, no Python helper), and the preferred-frame-size hint (renders at 0px without it).</p>
+        <p>The MIME modifier came from a careful re-read of the docs after the "Unsupported UI resource content format" error. The <code>App.connect()</code> requirement came from a developer note the user found in a GitHub thread. Both required iterating against a real host's failures — docs alone weren't enough.</p>
+        <p>Add to the grill checklist for future host-binding chunks: <em>"After my SDK code, do I also need to embed any client-side runtime (like <code>ext-apps</code>) for the host's handshake?"</em> If yes, version compatibility between server and client runtime is the next thing to check.</p>
+      </div>
+    </details>
+
+    <details class="border rounded p-4 bg-white">
+      <summary class="font-medium">First lessons-learned entry for M7.2 (Phase 2 motivation)</summary>
+      <div class="mt-3 text-sm space-y-2">
+        <p>M7.2 (lessons-learned doc) is the "raw material for Phase 2 motivation" chunk. This is its first entry: <strong>even when the implementation is spec-correct, the host's render quality determines what the user sees</strong>. Phase 1's Claude Desktop dependency is a single point of failure for every visual surface. Phase 2 (Pydantic AI + A2UI + CopilotKit, own Next.js app) is exactly the architecture that removes that dependency.</p>
+        <p>This chunk converted "Phase 2 is interesting because we'll have more control" into "Phase 2 is necessary because Phase 1's host render is observably broken." That's a much stronger Phase 2 motivation, and it landed in the lessons-learned bucket six chunks early.</p>
+      </div>
+    </details>
+
+  </section>
+
+  <!-- ────────────────────────────────────────  GO DEEPER  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Go deeper</h2>
+    <ul class="space-y-2 text-sm">
+      <li class="border-l-4 border-amber-300 pl-3">"Walk through Claude Desktop's mcp-ui render path — what's the specific code change in <code>anthropics/claude-ai-mcp#165</code> that needs to land? What's the workaround until it does?"</li>
+      <li class="border-l-4 border-amber-300 pl-3">"What's the full <code>App.connect()</code> protocol — what handshake messages get exchanged, what does the host expect to see in what order, and what does <code>strict: true</code> actually surface?"</li>
+      <li class="border-l-4 border-amber-300 pl-3">"How would I make a marker click in the map send a tool call back to the MCP server — guest-to-host RPC via <code>app.callTool()</code>, what does that wire up to on the server side?"</li>
+      <li class="border-l-4 border-amber-300 pl-3">"Build a tiny test harness: spin up MCPJam in headless mode, point it at our MCP server, snapshot the rendered iframe — CI for mcp-ui surfaces."</li>
+      <li class="border-l-4 border-amber-300 pl-3">"Compare wire cost of inline UIResource (one round-trip, HTML in tool result) vs MCP Apps (two round-trips, HTML in resources/read) at M4.3 heatmap scale where the HTML may be 500KB+."</li>
+      <li class="border-l-4 border-amber-300 pl-3">"What does <code>remoteDom</code> look like in practice — same screen map, but as React components served as a script. What does the server emit, what does the host render, and is it cheaper at large data sizes?"</li>
+    </ul>
+  </section>
+
+  <footer class="text-xs text-slate-500 pt-6 border-t">
+    Chunk M1.3 · Shipped 2026-06-02 · Skills: grill-with-docs, handoff · Verified in MCPJam Inspector; Claude Desktop render bug filed · Next: <a href="../../roadmap.md" class="underline">M1.4 — campaign, creative, targeting schemas</a>
+  </footer>
+
+</div>
+</body>
+</html>

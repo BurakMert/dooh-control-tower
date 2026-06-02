@@ -35,3 +35,9 @@ call "tools/call health_check" \
 
 call "tools/call count_screens" \
   '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"count_screens","arguments":{}}}'
+
+call "tools/call list_screens (truncated)" \
+  '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"list_screens","arguments":{}}}'
+
+call "tools/call show_screen_map (head)" \
+  '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"show_screen_map","arguments":{}}}'

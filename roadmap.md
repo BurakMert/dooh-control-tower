@@ -29,19 +29,20 @@ Goal: shippable demo of all three hero journeys (planning, diagnosis, reporting)
   - [x] **M0.6a** — `docker-compose.yml` with `postgis/postgis:17-3.5` (Apple Silicon: `platform: linux/amd64` pin); verified via `psql` (PostgreSQL 17.5, PostGIS 3.5 with GEOS/PROJ/STATS). *Shipped 2026-05-31.*
   - [x] **M0.6b** — SQLAlchemy 2.0 async + psycopg3 (chosen via `grill-with-docs` over asyncpg for the sync+async one-driver win). `db.py` engine + session factory + lifespan; `app.py` composes lifespans via `AsyncExitStack`; `health_check` extended with a `postgres` component running `SELECT PostGIS_full_version()`. *Shipped 2026-05-31.*
 
-### M1 — Domain model & synthetic network (~5 chunks)
+### M1 — Domain model & synthetic network (~6 chunks)
 - [x] **M1.1** — Schema: `screen` table with PostGIS geometry column. SQLA 2.0 Declarative + `Mapped[T]`, GeoAlchemy2 `Geometry("POINT", srid=4326, spatial_index=True)`, Alembic bootstrapped with `include_object` filter (skips postgis/TIGER tables), `count_screens` MCP tool. *Shipped 2026-06-01. Reflection: [`docs/reflections/m1-1-first-spatial-table.html`](docs/reflections/m1-1-first-spatial-table.html).*
 - [x] **M1.2** — Synthetic network generator. 100 screens, 12 hand-curated NYC anchors (Manhattan 60% / Brooklyn 25% / Queens 15%), seeded `random.Random(42)`, ~500m uniform jitter. CLI entrypoint `dooh-seed` (registered in pyproject). SQLA Core bulk insert via `pg_insert.on_conflict_do_nothing(external_id)` — idempotent. Verified: `count_screens` returns 100; market tally 53/28/19. *Shipped 2026-06-01. Reflection: [`docs/reflections/m1-2-synthetic-network.html`](docs/reflections/m1-2-synthetic-network.html).*
-- [ ] M1.3 — Schema: `campaign`, `creative`, `targeting` tables.
-- [ ] M1.4 — Schema: `pop_event` (daily partitions) + `pacing_bucket`.
-- [ ] M1.5 — H3 indexing job (precompute res-8 and res-9 cells per screen).
+- [x] **M1.3** — *First mcp-ui surface.* `show_screen_map` registered as a `@mcp.resource(ui://dooh-control-tower/screen-map)` returning a self-contained ~26KB Leaflet rawHtml page (CARTO Voyager Light tiles, MIME `text/html;profile=mcp-app`); tool's `_meta.ui.resourceUri` points the host at it (MCP Apps SEP-1724 pattern). 100 markers color-coded by market (Manhattan indigo / Brooklyn emerald / Queens amber). HTML loads `@modelcontextprotocol/ext-apps@^1.7.0` and calls `App.connect({strict:true})` for the host handshake. Resource carries `preferred-frame-size: [100%, 560px]`. Sibling `list_screens` tool ships `ScreenSummary` (M2.3-extensible). *Verified in MCPJam Inspector* (renders cleanly). *Does not render in stock Claude Desktop* (host categorizes as Interactive + injects "widget rendered" context message, but iframe contents invisible — tracking via `anthropics/claude-ai-mcp#165`). Pulled forward from M2.4/M2.5. *Shipped 2026-06-02. Reflection: [`docs/reflections/m1-3-first-mcp-ui-surface.html`](docs/reflections/m1-3-first-mcp-ui-surface.html).*
+- [ ] M1.4 — Schema: `campaign`, `creative`, `targeting` tables.
+- [ ] M1.5 — Schema: `pop_event` (daily partitions) + `pacing_bucket`.
+- [ ] M1.6 — H3 indexing job (precompute res-8 and res-9 cells per screen).
 
 ### M2 — Read-only MCP surface (~5 chunks)
 - [ ] M2.1 — `list_campaigns` tool.
 - [ ] M2.2 — `get_campaign` tool with detail.
-- [ ] M2.3 — `list_screens` tool with geo filter.
-- [ ] M2.4 — First mcp-ui surface: `CampaignCard`.
-- [ ] M2.5 — First mcp-ui surface: `ScreenList`.
+- [ ] M2.3 — `list_screens` tool with geo filter (extends the minimal `list_screens` shipped in M1.3 with geo predicates).
+- [ ] M2.4 — Second mcp-ui surface: `CampaignCard`.
+- [ ] M2.5 — Third mcp-ui surface: `ScreenList` (tabular complement to the M1.3 map).
 
 ### WR1 — Workflow refresh #1 (~Day 14)
 - [ ] **WR1** — Workflow refresh: Anthropic news + Claude Code changelog, context7 version check (MCP / Pydantic AI / A2UI / CopilotKit), skim 1 community workflow source. Update `CLAUDE.md` / memory **only if** it changes how we work.
@@ -108,6 +109,8 @@ Milestone shape (to be detailed once Phase 1 M7.2 lessons-learned is written —
 ---
 
 ## Today's start
-**Next chunk: M1.3** — `campaign`, `creative`, `targeting` schemas + their first migration. Decisions to land at the top: (1) one migration or three — bundle all three new tables into one `alembic revision` or stage them; (2) `campaign` ↔ `creative` cardinality — 1:N (campaign has many creatives) or N:N (creatives shared across campaigns); (3) `targeting` as a separate table or as JSONB columns on `campaign` (FK rows compose better with PostGIS in M3.3; JSONB is more flexible but slower to query); (4) seed strategy — `seed_campaigns()` sub-function in the existing `seed.py`, deterministic from the same SEED=42, ~10 synthetic campaigns referencing the screens we already have. Reflection-eligible (new ORM patterns: FKs, multi-table relationships, the JSONB-vs-table tension).
+**Next chunk: M1.4** — `campaign`, `creative`, `targeting` schemas + their first migration. Decisions to land at the top: (1) one migration or three — bundle all three new tables into one `alembic revision` or stage them; (2) `campaign` ↔ `creative` cardinality — 1:N (campaign has many creatives) or N:N (creatives shared across campaigns); (3) `targeting` as a separate table or as JSONB columns on `campaign` (FK rows compose better with PostGIS in M3.3; JSONB is more flexible but slower to query); (4) seed strategy — `seed_campaigns()` sub-function in the existing `seed.py`, deterministic from the same SEED=42, ~10 synthetic campaigns referencing the screens we already have. Reflection-eligible (new ORM patterns: FKs, multi-table relationships, the JSONB-vs-table tension).
+
+**Reminder:** docker compose stack is left running. If it's not, `docker compose up -d` from the repo root.
 
 **Reminder:** docker compose stack is left running. If it's not, `docker compose up -d` from the repo root.

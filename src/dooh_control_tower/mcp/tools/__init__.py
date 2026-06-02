@@ -2,4 +2,4 @@
 # @mcp.tool() decorator at import time. server.py imports this package once
 # during startup; new tools are added by creating a new module here and adding
 # it to the line below.
-from dooh_control_tower.mcp.tools import about, health, screens  # noqa: F401
+from dooh_control_tower.mcp.tools import about, health, screen_map, screens  # noqa: F401
