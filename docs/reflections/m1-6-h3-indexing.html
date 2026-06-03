@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>M1.6 — H3 indexing</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({ startOnLoad: true, theme: 'neutral', themeVariables: { fontSize: '14px' } });
+</script>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  details > summary { cursor: pointer; list-style: none; }
+  details > summary::-webkit-details-marker { display: none; }
+  details > summary::before { content: "▸ "; color: #64748b; }
+  details[open] > summary::before { content: "▾ "; }
+  pre { font-size: 12px; line-height: 1.4; }
+  .mermaid { background: white; }
+  table.compact td, table.compact th { padding: 0.25rem 0.75rem; border-bottom: 1px solid #e2e8f0; text-align: left; vertical-align: top; }
+  table.compact th { font-weight: 600; color: #475569; }
+  .pill { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 11px; font-weight: 600; }
+  .pill-green { background: #dcfce7; color: #166534; }
+  .pill-red { background: #fee2e2; color: #991b1b; }
+</style>
+</head>
+<body class="bg-slate-50 text-slate-900">
+<div class="max-w-4xl mx-auto px-6 py-10 space-y-10">
+
+  <header class="space-y-2">
+    <p class="text-sm text-slate-500">Reflection · M1.6</p>
+    <h1 class="text-3xl font-semibold">H3 indexing — the chunk that got smaller as it got sharper</h1>
+    <p class="text-slate-600">M1.6 started as five queued decisions and ended up about half the original scope after the grill. The principle that did most of the trimming: <em>the database stays a database</em>. Three "let's add this" temptations got cut — h3-pg extension, h3 columns on screen, speculative btree indexes. What shipped: one Python dep, one ~5-line helper, one ~30-line backfill, one ADR.</p>
+  </header>
+
+  <!-- ────────────────────────────────────────  BIG PICTURE  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Big picture</h2>
+    <div class="mermaid bg-white border rounded p-4">
+flowchart LR
+  Screen[screen<br/>geom POINT] --> Lookup["Python load<br/>at write time"]
+  Lookup --> Compute["compute_h3_cells<br/>lat lng → r8 + r9"]
+  Compute --> WriteSync["M3.4 sync insert<br/>(future)"]
+  Compute --> WriteSeed["seed_pop_events<br/>(M1.5/M1.6)"]
+  Compute --> Backfill["backfill_pop_event_h3<br/>(safety net)"]
+  WriteSync --> PopEvent[pop_event<br/>h3_r8 + h3_r9 BIGINT]
+  WriteSeed --> PopEvent
+  Backfill --> PopEvent
+  PopEvent --> Heatmap["M4 heatmap<br/>GROUP BY h3_r8"]
+  style Compute fill:#fef3c7
+  style PopEvent fill:#dcfce7
+    </div>
+    <p class="text-sm text-slate-600">Three writers, one helper, one column pair. <code>screen.geom</code> stays the single source of truth for location; pop_event gets its impression-time h3 snapshot at INSERT (ADR-0001) computed by the Python helper (ADR-0002).</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  TL;DR  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">TL;DR — what shipped</h2>
+    <ul class="list-disc list-inside text-slate-700 space-y-1">
+      <li><strong>Dep:</strong> <code>h3==4.5.0</code> via <code>uv add h3</code>.</li>
+      <li><strong>Helper:</strong> <code>compute_h3_cells(lat, lng) → (r8_int, r9_int)</code>. Two <code>h3.latlng_to_cell</code> calls + <code>str_to_int</code> for BIGINT storage.</li>
+      <li><strong>Write-path integration:</strong> <code>seed_pop_events()</code> sets <code>h3_r8</code>/<code>h3_r9</code> at insert from each sampled screen's lat/lng.</li>
+      <li><strong>Safety net:</strong> <code>backfill_pop_event_h3()</code> — UPDATEs any pop_event row where <code>h3_r8 IS NULL</code>. Used to populate the M1.5-seeded rows; future M3.4/M3.5 writes set h3 at INSERT so the backfill is a no-op.</li>
+      <li><strong>Reading discipline:</strong> M4 heatmap reads <code>pop_event.h3_r8</code> directly — never JOINs <code>screen</code> for h3.</li>
+      <li><strong>No new tables, no new columns, no new indexes.</strong> The M1.5 schema already had the columns. The migration count for this chunk: zero.</li>
+      <li><strong>ADR-0002</strong> documents the Python-not-extension choice plus the two adjacent "no" decisions (no screen-side h3, no speculative indexes).</li>
+    </ul>
+  </section>
+
+  <!-- ────────────────────────────────────────  THE 5 GRILL DECISIONS  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">The five grill decisions</h2>
+    <table class="compact text-sm w-full bg-white border rounded">
+      <thead><tr><th>#</th><th>Question</th><th>Chosen</th><th>Why</th></tr></thead>
+      <tbody>
+        <tr><td>1</td><td>H3 library</td><td><strong>Python <code>h3</code> 4.x</strong></td><td>DB stays a DB. h3-pg requires a custom Postgres image build for marginal payoff. <a href="../adr/0002-h3-python-not-extension.md">ADR-0002</a>.</td></tr>
+        <tr><td>2</td><td>Resolutions</td><td><strong>r8 + r9 only</strong></td><td>Cluster (~531m edge) + block (~201m). Matches pre-PRD. r10 (~76m) is single-screen scale; M4 uses markers at that zoom, no hex needed.</td></tr>
+        <tr><td>3</td><td>h3 columns on <code>screen</code></td><td><strong>NO</strong></td><td>User push-back: <code>screen.geom</code> is source of truth; don't cache derivable data for a microsecond-scale write-path optimization that doesn't matter at our scale.</td></tr>
+        <tr><td>4</td><td>Backfill strategy</td><td><strong>Function in <code>seed.py</code></strong></td><td>Schema migrations stay pure DDL. The seed module already owns synthetic-data shaping; backfill is "make existing data reflect current seed rules."</td></tr>
+        <tr><td>5</td><td>Postgres btree indexes</td><td><strong>NONE in M1.6 — defer to M4.1</strong></td><td>The chunk's name ("H3 indexing") refers to H3 cell-indexing, not Postgres btrees. Speculative btree gets the wrong leading column ~30% of the time without measurement.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ────────────────────────────────────────  THE INDEXING CONFUSION  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Two kinds of "indexing"</h2>
+    <p class="text-slate-700">The single biggest moment in the grill — the word "indexing" carries two meanings, and they're easy to conflate:</p>
+    <table class="compact text-sm w-full bg-white border rounded">
+      <thead><tr><th></th><th>"H3 indexing"</th><th>"Postgres indexing"</th></tr></thead>
+      <tbody>
+        <tr><td>What it means</td><td>Computing H3 cell IDs from (lat, lng, resolution) so a point can be looked up in a hexagonal grid.</td><td>Adding btree / GiST indexes on table columns so queries don't sequential-scan.</td></tr>
+        <tr><td>This chunk</td><td><span class="pill pill-green">YES</span> — that's the whole job.</td><td><span class="pill pill-red">NO</span> — deferred to M4.1.</td></tr>
+        <tr><td>The trap</td><td colspan="2">Pre-emptively adding <code>(h3_r8, event_date)</code> as a btree is the obvious move <em>only if you confuse the two</em>. We don't have the M4 heatmap query yet — adding a btree without knowing the actual query shape risks the wrong leading column. At ~10K-distinct-h3-value cardinality the planner often picks HashAggregate regardless, making the index irrelevant for the bulk-grouped case.</td></tr>
+      </tbody>
+    </table>
+    <p class="text-slate-700">The discipline: <strong>index when you know the query AND can measure</strong>. M4 will have both. M1.6 has neither.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  DOES INDEX HELP GROUP BY  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Does a Postgres btree help GROUP BY?</h2>
+    <p class="text-slate-700">The question that triggered Q5's revision. Three ways an index helps GROUP BY:</p>
+    <ul class="list-disc list-inside text-slate-700 space-y-1">
+      <li><strong>Sorted-input GroupAggregate.</strong> If the index column order matches the GROUP BY columns, Postgres reads the index in order and emits groups without a sort step.</li>
+      <li><strong>Index-only scan.</strong> If every column the query touches is in the index, the planner skips the heap entirely. Less I/O.</li>
+      <li><strong>Selective filter.</strong> <code>WHERE h3_r8 IN (viewport)</code> narrows the scan before GROUP BY runs.</li>
+    </ul>
+    <p class="text-slate-700">The catch: at ~10K-distinct-group cardinality, <strong>HashAggregate</strong> usually wins. It builds a hash table in one sweep, doesn't care about input order, fits in memory easily. So for the bulk M4 query <code>SELECT h3_r8, count(*) FROM pop_event WHERE event_date BETWEEN ... GROUP BY h3_r8</code>, the index is often skipped by the planner regardless.</p>
+    <p class="text-slate-700">Where an index genuinely wins: <strong>viewport-filtered queries</strong> (<code>WHERE h3_r8 IN (...)</code>) where the filter is the leading column. M4.5 (drill-down on hex click) is that shape — and that's the milestone where we'll EXPLAIN, measure, and add the right composite.</p>
+  </section>
+
+  <!-- ────────────────────────────────────────  VERIFICATION  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Verification</h2>
+    <table class="compact text-sm w-full bg-white border rounded">
+      <thead><tr><th>Check</th><th>Result</th></tr></thead>
+      <tbody>
+        <tr><td>h3 4.5.0 installed via <code>uv add</code></td><td>✓ confirmed via <code>h3.versions()</code></td></tr>
+        <tr><td>Cell IDs fit in BIGINT (int64)</td><td>✓ all under 2⁶³ (uint64 top bit always zero for valid cells)</td></tr>
+        <tr><td>Empirical r8 / r9 edge lengths</td><td>r8 ~531m, r9 ~201m — confirms the "cluster + block" pair (my earlier "~150m" framing was wrong; corrected in the M1.6 roadmap entry)</td></tr>
+        <tr><td><code>seed_pop_events()</code> sets h3 at insert</td><td>✓ — new rows include h3_r8 + h3_r9 directly in INSERT batch</td></tr>
+        <tr><td><code>backfill_pop_event_h3()</code> populates pre-M1.6 rows</td><td>30 NULL rows updated on first run</td></tr>
+        <tr><td>Idempotency — second run</td><td>0 rows backfilled (no NULLs left)</td></tr>
+        <tr><td>All pop_events have h3</td><td>60/60 with_r8, 60/60 with_r9 ✓</td></tr>
+        <tr><td>Hex clustering reasonable</td><td>Cell <code>882a1072d5fffff</code> has 26 hits — centroid (40.7073, -73.9969) ~140m from Cadman Plaza; Cadman + DUMBO are ~600m apart and r8 edge is ~531m, so they share a hex. Cluster-level grouping working.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <!-- ────────────────────────────────────────  WORKFLOW  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Workflow notes</h2>
+    <ul class="list-disc list-inside text-slate-700 space-y-1">
+      <li><strong>The grill made the chunk smaller, not bigger.</strong> Started at 5 queued decisions, 4 of them ended with "less than I'd proposed." Q3 user push-back ("don't add h3 to screen"), Q5 self-correction ("no Postgres index in M1.6"), Q1 ADR ("Python-not-extension") all simplified. M1.5 had the opposite trajectory — grill <em>added</em> ADR-0001 and CONTEXT.md. Skill output depends on what the question is.</li>
+      <li><strong>A new feedback memory landed.</strong> <code>[[feedback_db_stays_a_db]]</code> — durable architectural taste. Q1's reframing (h3-pg → Python h3) was the trigger; ADR-0002 codifies the principle for the project.</li>
+      <li><strong>My roadmap "~150m / ~55m" edge-size framing was wrong.</strong> Actual r8 ~531m, r9 ~201m. Caught during Q2 via h3 docs + empirical check. The reflection records the correction.</li>
+      <li><strong>Bonus pedagogy from the data.</strong> The Cadman + DUMBO co-hex finding was a happy accident — visualizes WHY r8 is the cluster scale, not the screen scale.</li>
+    </ul>
+  </section>
+
+  <!-- ────────────────────────────────────────  GO DEEPER  ──────────────────────────────────────── -->
+  <section class="space-y-3">
+    <h2 class="text-xl font-semibold border-b pb-1">Go deeper</h2>
+    <ul class="list-disc list-inside text-slate-700 space-y-1">
+      <li><strong>h3-pg adoption path.</strong> What would trigger us to actually add it? Most likely candidates: M3.3 polygon-to-hex eligibility (<code>h3_polygon_to_cells</code>), M4.3 hex outline rendering server-side (<code>h3_cell_to_boundary_geometry</code>), or any neighbor-of-cell traversal at scale.</li>
+      <li><strong>HashAggregate vs GroupAggregate planner cost model.</strong> When does the planner actually pick GroupAggregate over HashAggregate? <code>work_mem</code> tuning, cardinality estimation, INDEX-only-scan visibility-map state.</li>
+      <li><strong>UPDATE on a partitioned table.</strong> Our backfill UPDATE works across daily partitions transparently. What's the cost vs INSERT? When does CONCURRENT UPDATE become a problem?</li>
+      <li><strong>h3 4.x API: default str vs memview_int.</strong> We use <code>latlng_to_cell + str_to_int</code>; could switch to <code>h3.api.memview_int.latlng_to_cell</code> for direct int return. Bench at simulator scale (M3.5).</li>
+      <li><strong>Composite key bind-param UPDATE.</strong> Our backfill issues one UPDATE per row — fine at 30 rows, would batch at scale. The SQLA pattern: <code>update().where(col == bindparam(...)).values(...)</code> + <code>session.execute(stmt, list_of_dicts)</code>. Try it next time we need bulk UPDATE.</li>
+      <li><strong>Drift surface for derived data.</strong> If we ever add <code>UPDATE screen SET geom = ...</code>, what discipline ensures the corresponding pop_events' h3 stays correct? (Answer: per ADR-0001, they don't update — they preserve impression-time location.)</li>
+    </ul>
+  </section>
+
+  <footer class="text-sm text-slate-500 pt-6 border-t">
+    <p>Shipped 2026-06-04. ADR: <a href="../adr/0002-h3-python-not-extension.md" class="text-indigo-600 underline">ADR-0002</a>. M1 complete. Next chunk: <strong>M2.1 — <code>list_campaigns</code> tool</strong>. Phase 1's read-only MCP surface begins.</p>
+  </footer>
+
+</div>
+</body>
+</html>

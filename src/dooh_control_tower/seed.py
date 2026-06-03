@@ -1,5 +1,5 @@
 """Synthetic NYC DOOH dataset — screens, campaigns, creatives, targeting,
-pop_events, pacing_buckets.
+pop_events (with H3), pacing_buckets.
 
 Run: ``uv run dooh-seed``
 
@@ -7,14 +7,17 @@ Idempotent: every seeder uses ON CONFLICT DO NOTHING against a natural or
 external key. Re-running skips existing rows. To regenerate from scratch,
 TRUNCATE the relevant tables first (no --reset flag yet).
 
-Four seeders run in order:
-  1. `seed_screens()`         — 100 screens around 12 NYC anchors (M1.2).
-  2. `seed_campaigns()`       — 10 campaigns + creatives + targeting (M1.4).
-  3. `seed_pop_events()`      — ~30 PoP impressions across 3 days (M1.5).
-  4. `seed_pacing_buckets()`  — ~500 hourly slots, actuals from pop_events (M1.5).
+Five seeders run in order:
+  1. `seed_screens()`           — 100 screens around 12 NYC anchors (M1.2).
+  2. `seed_campaigns()`         — 10 campaigns + creatives + targeting (M1.4).
+  3. `seed_pop_events()`        — ~30 PoP impressions across 3 days (M1.5+M1.6).
+  4. `backfill_pop_event_h3()`  — populate h3_r8/r9 on any rows missing it (M1.6).
+  5. `seed_pacing_buckets()`    — ~500 hourly slots, actuals from pop_events (M1.5).
 
 pop_events depends on screens + campaigns + creatives + targeting. Pacing
-buckets depend on pop_events (actuals are computed from them).
+buckets depend on pop_events. H3 backfill is decoupled so it can be re-run
+independently when h3 lib version changes or new pop_events arrive without
+h3 set (e.g., earlier M1.5 seed data).
 
 This is the dev-loop analogue of an ad-network CSV importer that would land
 in this slot in production.
@@ -27,8 +30,9 @@ import datetime as dt
 import random
 from dataclasses import dataclass
 
+import h3
 from geoalchemy2 import WKTElement
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from dooh_control_tower.db import async_session_factory
@@ -453,13 +457,35 @@ async def ensure_pop_event_partition(session, day: dt.date) -> None:
     )
 
 
+def compute_h3_cells(lat: float, lng: float) -> tuple[int, int]:
+    """Pure helper — return (h3_r8, h3_r9) cell IDs as int64 for a point.
+
+    Default h3 API returns hex strings; we convert via `str_to_int` so the
+    values match the BIGINT column type on both `pop_event.h3_r8/r9`. Both
+    cells fit comfortably in int64 (uint64 top bit is always zero for
+    valid H3 cells). See ADR-0002 for the Python-not-extension rationale.
+
+    Edge length sanity: r8 ~531m (cluster), r9 ~201m (block-level).
+    """
+    return (
+        h3.str_to_int(h3.latlng_to_cell(lat, lng, 8)),
+        h3.str_to_int(h3.latlng_to_cell(lat, lng, 9)),
+    )
+
+
 async def _eligible_screens_for(
     session, campaign_id, targeting_id
 ) -> list[dict]:
     """Screens inside this campaign's targeting polygon — same query M3.3
-    will use at ad-request time."""
+    will use at ad-request time. Includes lat/lng so M1.6 can compute
+    h3 cells at insert time."""
     stmt = (
-        select(Screen.id, Screen.market)
+        select(
+            Screen.id,
+            Screen.market,
+            func.ST_Y(Screen.geom).label("lat"),
+            func.ST_X(Screen.geom).label("lng"),
+        )
         .join(Targeting, func.ST_Contains(Targeting.geom, Screen.geom))
         .where(Targeting.id == targeting_id)
     )
@@ -537,6 +563,10 @@ async def seed_pop_events() -> dict[str, int]:
                 tzinfo=dt.timezone.utc,
             )
             partition_days.add(day)
+            # M1.6: freeze impression-time H3 cell on the row (ADR-0001
+            # point-in-time correctness). Computed in Python from the
+            # screen's current geom (ADR-0002 — DB stays a DB).
+            h3_r8, h3_r9 = compute_h3_cells(screen["lat"], screen["lng"])
             rows.append(
                 {
                     "event_ts": event_ts,
@@ -545,6 +575,8 @@ async def seed_pop_events() -> dict[str, int]:
                     "creative_id": creative["id"],
                     "screen_id": screen["id"],
                     "duration_seconds": creative["duration_seconds"],
+                    "h3_r8": h3_r8,
+                    "h3_r9": h3_r9,
                 }
             )
 
@@ -562,6 +594,50 @@ async def seed_pop_events() -> dict[str, int]:
         await session.commit()
 
     return {"events": len(rows), "partitions": len(partition_days)}
+
+
+async def backfill_pop_event_h3() -> int:
+    """Compute h3_r8/r9 for any pop_event rows missing them. Idempotent —
+    re-running sets the same deterministic values from screen.geom.
+
+    Used for two cases: (a) pop_events seeded before M1.6 (NULL h3), and
+    (b) any future inserts that bypass the seed path. M3.4 sync writes
+    should set h3 at INSERT time using `compute_h3_cells()` directly; this
+    backfill is a safety net, not the primary path.
+
+    At seed scale (~30 rows) we issue one UPDATE per row. Production scale
+    would batch (e.g., 10K-row chunks) — same shape, just paginated.
+    """
+    async with async_session_factory() as session:
+        rows = (
+            await session.execute(
+                select(
+                    PopEvent.event_ts,
+                    PopEvent.event_date,
+                    PopEvent.screen_id,
+                    PopEvent.creative_id,
+                    func.ST_Y(Screen.geom).label("lat"),
+                    func.ST_X(Screen.geom).label("lng"),
+                )
+                .join(Screen, Screen.id == PopEvent.screen_id)
+                .where(PopEvent.h3_r8.is_(None))
+            )
+        ).all()
+
+        for r in rows:
+            h3_r8, h3_r9 = compute_h3_cells(r.lat, r.lng)
+            await session.execute(
+                update(PopEvent)
+                .where(
+                    PopEvent.event_ts == r.event_ts,
+                    PopEvent.event_date == r.event_date,
+                    PopEvent.screen_id == r.screen_id,
+                    PopEvent.creative_id == r.creative_id,
+                )
+                .values(h3_r8=h3_r8, h3_r9=h3_r9)
+            )
+        await session.commit()
+    return len(rows)
 
 
 async def seed_pacing_buckets() -> dict[str, int]:
@@ -635,18 +711,25 @@ async def seed_pacing_buckets() -> dict[str, int]:
 # ---------------------------------------------------------------------------
 
 
-async def _seed_all() -> tuple[dict, dict, dict, dict]:
+async def _seed_all() -> tuple[dict, dict, dict, int, dict]:
     screen_tally = await seed_screens()
     campaign_tally = await seed_campaigns()
     pop_tally = await seed_pop_events()
+    # M1.6: backfill h3 on any pop_events that pre-date this chunk OR slipped
+    # through a writer that didn't set h3 at INSERT. Idempotent.
+    backfilled = await backfill_pop_event_h3()
     pacing_tally = await seed_pacing_buckets()
-    return screen_tally, campaign_tally, pop_tally, pacing_tally
+    return screen_tally, campaign_tally, pop_tally, backfilled, pacing_tally
 
 
 def main() -> None:
-    screen_tally, campaign_tally, pop_tally, pacing_tally = asyncio.run(
-        _seed_all()
-    )
+    (
+        screen_tally,
+        campaign_tally,
+        pop_tally,
+        h3_backfilled,
+        pacing_tally,
+    ) = asyncio.run(_seed_all())
 
     total_screens = sum(screen_tally.values())
     print(f"Seeded synthetic network: {total_screens} screens.")
@@ -665,6 +748,9 @@ def main() -> None:
         f"Seeded PoP events: {pop_tally['events']} impressions "
         f"across {pop_tally['partitions']} daily partitions."
     )
+
+    print()
+    print(f"Backfilled H3 cells on {h3_backfilled} pop_event rows.")
 
     print()
     print(
